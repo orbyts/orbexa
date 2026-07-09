@@ -11,6 +11,7 @@ documentation = "https://docs.rs/orbexa"
 readme = "README.md"
 keywords = ["notion", "markdown", "knowledge", "sync", "git"]
 categories = ["command-line-utilities", "development-tools"]
+publish = true
 
 [lib]
 name = "orbexa"
