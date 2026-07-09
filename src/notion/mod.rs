@@ -211,57 +211,24 @@ struct InitialDataSource<'a> {
 struct DocumentProperties {
     #[serde(rename = "Name")]
     name: TitlePropertySchema,
-    #[serde(rename = "Orbexa ID")]
-    orbexa_id: RichTextPropertySchema,
-    #[serde(rename = "Codexa ID")]
-    codexa_id: RichTextPropertySchema,
+    #[serde(rename = "Description")]
+    description: RichTextPropertySchema,
     #[serde(rename = "Kind")]
     kind: SelectPropertySchema,
-    #[serde(rename = "Visibility")]
-    visibility: SelectPropertySchema,
+    #[serde(rename = "Tags")]
+    tags: MultiSelectPropertySchema,
     #[serde(rename = "Status")]
     status: SelectPropertySchema,
-    #[serde(rename = "Source Repository")]
-    source_repository: RichTextPropertySchema,
-    #[serde(rename = "Source Path")]
-    source_path: RichTextPropertySchema,
-    #[serde(rename = "Source Commit")]
-    source_commit: RichTextPropertySchema,
-    #[serde(rename = "Content Hash")]
-    content_hash: RichTextPropertySchema,
-    #[serde(rename = "Last Synced At")]
-    last_synced_at: DatePropertySchema,
-    #[serde(rename = "Managed By")]
-    managed_by: RichTextPropertySchema,
-    #[serde(rename = "Sync State")]
-    sync_state: SelectPropertySchema,
-    #[serde(rename = "Canonical Route")]
-    canonical_route: UrlPropertySchema,
-    #[serde(rename = "Published URL")]
-    published_url: UrlPropertySchema,
-    #[serde(rename = "Private URL")]
-    private_url: UrlPropertySchema,
 }
 
 impl Default for DocumentProperties {
     fn default() -> Self {
         Self {
             name: TitlePropertySchema::default(),
-            orbexa_id: RichTextPropertySchema::default(),
-            codexa_id: RichTextPropertySchema::default(),
+            description: RichTextPropertySchema::default(),
             kind: SelectPropertySchema::default(),
-            visibility: SelectPropertySchema::default(),
+            tags: MultiSelectPropertySchema::default(),
             status: SelectPropertySchema::default(),
-            source_repository: RichTextPropertySchema::default(),
-            source_path: RichTextPropertySchema::default(),
-            source_commit: RichTextPropertySchema::default(),
-            content_hash: RichTextPropertySchema::default(),
-            last_synced_at: DatePropertySchema::default(),
-            managed_by: RichTextPropertySchema::default(),
-            sync_state: SelectPropertySchema::default(),
-            canonical_route: UrlPropertySchema::default(),
-            published_url: UrlPropertySchema::default(),
-            private_url: UrlPropertySchema::default(),
         }
     }
 }
@@ -277,18 +244,13 @@ struct RichTextPropertySchema {
 }
 
 #[derive(Debug, Default, Serialize)]
-struct DatePropertySchema {
-    date: std::collections::BTreeMap<String, String>,
-}
-
-#[derive(Debug, Default, Serialize)]
-struct UrlPropertySchema {
-    url: std::collections::BTreeMap<String, String>,
-}
-
-#[derive(Debug, Default, Serialize)]
 struct SelectPropertySchema {
     select: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct MultiSelectPropertySchema {
+    multi_select: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
