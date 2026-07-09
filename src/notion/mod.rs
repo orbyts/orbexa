@@ -56,6 +56,7 @@ impl NotionClient {
     ) -> Result<Page, NotionError> {
         let request = CreatePageRequest {
             parent: PageParent {
+                parent_type: "page_id",
                 page_id: parent_page_id,
             },
             properties: PageTitleProperties {
@@ -89,6 +90,59 @@ impl NotionClient {
 
         let page = serde_json::from_str(&text)?;
         Ok(page)
+    }
+
+    /// Creates a database under an existing page with an initial data source.
+    pub fn create_database(
+        &self,
+        parent_page_id: &str,
+        title: &str,
+        data_source_name: &str,
+    ) -> Result<Database, NotionError> {
+        let request = CreateDatabaseRequest {
+            parent: PageParent {
+                parent_type: "page_id",
+                page_id: parent_page_id,
+            },
+            title: vec![RichText {
+                text: TextContent { content: title },
+            }],
+            description: vec![RichText {
+                text: TextContent {
+                    content: "Managed by Orbexa from Codexa artifacts.",
+                },
+            }],
+            is_inline: true,
+            initial_data_source: InitialDataSource {
+                title: vec![RichText {
+                    text: TextContent {
+                        content: data_source_name,
+                    },
+                }],
+                properties: DocumentProperties::default(),
+            },
+        };
+
+        let response = self
+            .http
+            .post("https://api.notion.com/v1/databases")
+            .bearer_auth(&self.token)
+            .header("Notion-Version", &self.api_version)
+            .json(&request)
+            .send()?;
+
+        let status = response.status();
+        let text = response.text()?;
+
+        if !status.is_success() {
+            return Err(NotionError::Api {
+                status: status.as_u16(),
+                body: text,
+            });
+        }
+
+        let database = serde_json::from_str(&text)?;
+        Ok(database)
     }
 
     /// Retrieves all first-level block children for a block or page.
@@ -139,6 +193,105 @@ impl NotionClient {
 }
 
 #[derive(Debug, Serialize)]
+struct CreateDatabaseRequest<'a> {
+    parent: PageParent<'a>,
+    title: Vec<RichText<'a>>,
+    description: Vec<RichText<'a>>,
+    is_inline: bool,
+    initial_data_source: InitialDataSource<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct InitialDataSource<'a> {
+    title: Vec<RichText<'a>>,
+    properties: DocumentProperties,
+}
+
+#[derive(Debug, Serialize)]
+struct DocumentProperties {
+    #[serde(rename = "Name")]
+    name: TitlePropertySchema,
+    #[serde(rename = "Orbexa ID")]
+    orbexa_id: RichTextPropertySchema,
+    #[serde(rename = "Codexa ID")]
+    codexa_id: RichTextPropertySchema,
+    #[serde(rename = "Kind")]
+    kind: SelectPropertySchema,
+    #[serde(rename = "Visibility")]
+    visibility: SelectPropertySchema,
+    #[serde(rename = "Status")]
+    status: SelectPropertySchema,
+    #[serde(rename = "Source Repository")]
+    source_repository: RichTextPropertySchema,
+    #[serde(rename = "Source Path")]
+    source_path: RichTextPropertySchema,
+    #[serde(rename = "Source Commit")]
+    source_commit: RichTextPropertySchema,
+    #[serde(rename = "Content Hash")]
+    content_hash: RichTextPropertySchema,
+    #[serde(rename = "Last Synced At")]
+    last_synced_at: DatePropertySchema,
+    #[serde(rename = "Managed By")]
+    managed_by: RichTextPropertySchema,
+    #[serde(rename = "Sync State")]
+    sync_state: SelectPropertySchema,
+    #[serde(rename = "Canonical Route")]
+    canonical_route: UrlPropertySchema,
+    #[serde(rename = "Published URL")]
+    published_url: UrlPropertySchema,
+    #[serde(rename = "Private URL")]
+    private_url: UrlPropertySchema,
+}
+
+impl Default for DocumentProperties {
+    fn default() -> Self {
+        Self {
+            name: TitlePropertySchema::default(),
+            orbexa_id: RichTextPropertySchema::default(),
+            codexa_id: RichTextPropertySchema::default(),
+            kind: SelectPropertySchema::default(),
+            visibility: SelectPropertySchema::default(),
+            status: SelectPropertySchema::default(),
+            source_repository: RichTextPropertySchema::default(),
+            source_path: RichTextPropertySchema::default(),
+            source_commit: RichTextPropertySchema::default(),
+            content_hash: RichTextPropertySchema::default(),
+            last_synced_at: DatePropertySchema::default(),
+            managed_by: RichTextPropertySchema::default(),
+            sync_state: SelectPropertySchema::default(),
+            canonical_route: UrlPropertySchema::default(),
+            published_url: UrlPropertySchema::default(),
+            private_url: UrlPropertySchema::default(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Serialize)]
+struct TitlePropertySchema {
+    title: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct RichTextPropertySchema {
+    rich_text: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct DatePropertySchema {
+    date: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct UrlPropertySchema {
+    url: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct SelectPropertySchema {
+    select: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
 struct CreatePageRequest<'a> {
     parent: PageParent<'a>,
     properties: PageTitleProperties<'a>,
@@ -148,6 +301,8 @@ struct CreatePageRequest<'a> {
 
 #[derive(Debug, Serialize)]
 struct PageParent<'a> {
+    #[serde(rename = "type")]
+    parent_type: &'static str,
     page_id: &'a str,
 }
 
@@ -218,6 +373,30 @@ impl<'a> From<&'a WorkspaceCover> for PageCover<'a> {
 #[derive(Debug, Serialize)]
 struct ExternalFile<'a> {
     url: &'a str,
+}
+
+/// Minimal database response shape.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Database {
+    pub object: String,
+    pub id: String,
+    pub data_sources: Vec<DatabaseDataSource>,
+    pub url: Option<String>,
+}
+
+/// Minimal child data source reference in a database response.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DatabaseDataSource {
+    pub id: String,
+    pub name: String,
+}
+
+impl Database {
+    /// Returns the first data source matching the configured name.
+    #[must_use]
+    pub fn data_source_named(&self, name: &str) -> Option<&DatabaseDataSource> {
+        self.data_sources.iter().find(|source| source.name == name)
+    }
 }
 
 /// Minimal page response shape.
@@ -335,8 +514,35 @@ impl From<serde_json::Error> for NotionError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Block, Page, PageCover, PageIcon};
+    use super::{Block, Database, Page, PageCover, PageIcon};
     use crate::config::{WorkspaceCover, WorkspaceIcon};
+
+    #[test]
+    fn extracts_database_data_source() {
+        let json = r#"
+{
+  "object": "database",
+  "id": "database-id",
+  "url": "https://app.notion.com/database-id",
+  "data_sources": [
+    {
+      "id": "data-source-id",
+      "name": "Documents"
+    }
+  ]
+}
+"#;
+
+        let database: Database = serde_json::from_str(json).expect("database should parse");
+
+        assert_eq!(database.id, "database-id");
+        assert_eq!(
+            database
+                .data_source_named("Documents")
+                .map(|source| source.id.as_str()),
+            Some("data-source-id")
+        );
+    }
 
     #[test]
     fn extracts_page_title() {

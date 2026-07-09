@@ -261,3 +261,15 @@ id = ""
         assert_eq!(registry.notion.data_sources.documents.name, "Documents");
     }
 }
+
+/// Updates a registry with created database and data source IDs.
+#[must_use]
+pub fn registry_with_database(
+    mut registry: WorkspaceRegistry,
+    database_id: impl Into<String>,
+    data_source_id: impl Into<String>,
+) -> WorkspaceRegistry {
+    registry.notion.database.id = database_id.into();
+    registry.notion.data_sources.documents.id = data_source_id.into();
+    registry
+}

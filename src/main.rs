@@ -5,7 +5,8 @@ use orbexa::{
     notion::{Block, NotionClient, Page},
     plan::{BootstrapDiscovery, DiscoveredObject, render_init_plan_with_discovery},
     registry::{
-        load_registry, registry_from_workspace_page, resolve_registry_path, write_registry,
+        load_registry, registry_from_workspace_page, registry_with_database, resolve_registry_path,
+        write_registry,
     },
     state::{State, write_state},
 };
@@ -106,29 +107,98 @@ fn init(
         let workspace_page =
             client.retrieve_page(&loaded_registry.registry.notion.workspace_page_id)?;
 
+        if !loaded_registry.registry.notion.database.id.is_empty() {
+            println!("Orbexa init");
+            println!();
+            println!("Already initialized:");
+            println!("  Registry: {}", loaded_registry.path.display());
+            println!(
+                "  Workspace page: {}",
+                loaded_registry.registry.notion.workspace_page_name
+            );
+            println!(
+                "  Page ID: {}",
+                loaded_registry.registry.notion.workspace_page_id
+            );
+            println!(
+                "  Notion title: {}",
+                workspace_page
+                    .title()
+                    .unwrap_or_else(|| "<untitled>".into())
+            );
+            println!(
+                "  Database: {} {}",
+                loaded_registry.registry.notion.database.name,
+                loaded_registry.registry.notion.database.id
+            );
+            println!(
+                "  Data source: {} {}",
+                loaded_registry.registry.notion.data_sources.documents.name,
+                loaded_registry.registry.notion.data_sources.documents.id
+            );
+            if let Some(url) = &loaded_registry.registry.notion.workspace_page_url {
+                println!("  URL: {url}");
+            }
+            println!();
+            println!("No changes made.");
+            return Ok(());
+        }
+
+        if dry_run {
+            println!("Orbexa init plan");
+            println!();
+            println!("Already has workspace page:");
+            println!("  Registry: {}", loaded_registry.path.display());
+            println!(
+                "  Workspace page: {} {}",
+                loaded_registry.registry.notion.workspace_page_name,
+                loaded_registry.registry.notion.workspace_page_id
+            );
+            println!();
+            println!("Would create:");
+            println!("  Database     {}", loaded.config.workspace.database_name);
+            println!(
+                "  Data source  {}",
+                loaded.config.workspace.data_sources.documents.name
+            );
+            println!();
+            println!("Would update registry:");
+            println!("  {}", loaded_registry.path.display());
+            return Ok(());
+        }
+
+        let database = client.create_database(
+            &loaded_registry.registry.notion.workspace_page_id,
+            &loaded.config.workspace.database_name,
+            &loaded.config.workspace.data_sources.documents.name,
+        )?;
+
+        let data_source = database
+            .data_source_named(&loaded.config.workspace.data_sources.documents.name)
+            .or_else(|| database.data_sources.first())
+            .ok_or("created database did not return a data source")?;
+
+        let registry = registry_with_database(
+            loaded_registry.registry,
+            database.id.clone(),
+            data_source.id.clone(),
+        );
+        let written_registry_path = write_registry(&registry_path, &registry)?;
+
         println!("Orbexa init");
         println!();
-        println!("Already initialized:");
-        println!("  Registry: {}", loaded_registry.path.display());
+        println!("Created:");
         println!(
-            "  Workspace page: {}",
-            loaded_registry.registry.notion.workspace_page_name
+            "  Database {} {}",
+            loaded.config.workspace.database_name, database.id
         );
-        println!(
-            "  Page ID: {}",
-            loaded_registry.registry.notion.workspace_page_id
-        );
-        println!(
-            "  Notion title: {}",
-            workspace_page
-                .title()
-                .unwrap_or_else(|| "<untitled>".into())
-        );
-        if let Some(url) = &loaded_registry.registry.notion.workspace_page_url {
-            println!("  URL: {url}");
+        println!("  Data source {} {}", data_source.name, data_source.id);
+        if let Some(url) = &database.url {
+            println!("  URL {url}");
         }
         println!();
-        println!("No changes made.");
+        println!("Updated registry:");
+        println!("  {}", written_registry_path.display());
         return Ok(());
     }
 
@@ -198,7 +268,7 @@ fn init(
     println!("  {}", written_registry_path.display());
     println!();
     println!("Next:");
-    println!("  Database creation is not implemented yet.");
+    println!("  Run `orbexa init` again to create the database.");
 
     Ok(())
 }
