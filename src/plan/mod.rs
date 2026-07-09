@@ -2,9 +2,36 @@ use std::path::Path;
 
 use crate::config::{BootstrapMode, Config};
 
-/// Renders the initial Notion bootstrap plan.
+/// Read-only discovery result for the configured Notion parent page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapDiscovery {
+    pub parent_title: String,
+    pub matching_workspace_pages: Vec<DiscoveredObject>,
+    pub child_pages: Vec<DiscoveredObject>,
+    pub child_databases: Vec<DiscoveredObject>,
+}
+
+/// A Notion object discovered during bootstrap planning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredObject {
+    pub id: String,
+    pub title: String,
+}
+
+/// Renders the initial Notion bootstrap plan without live discovery.
 #[must_use]
 pub fn render_init_plan(config_path: &Path, state_dir: &Path, config: &Config) -> String {
+    render_init_plan_with_discovery(config_path, state_dir, config, None)
+}
+
+/// Renders the initial Notion bootstrap plan.
+#[must_use]
+pub fn render_init_plan_with_discovery(
+    config_path: &Path,
+    state_dir: &Path,
+    config: &Config,
+    discovery: Option<&BootstrapDiscovery>,
+) -> String {
     let mode = match config.notion.bootstrap.mode {
         BootstrapMode::Verify => "verify",
         BootstrapMode::Create => "create",
@@ -30,6 +57,27 @@ pub fn render_init_plan(config_path: &Path, state_dir: &Path, config: &Config) -
         "  Notion API version: {}\n\n",
         config.notion.api_version
     ));
+
+    if let Some(discovery) = discovery {
+        output.push_str("Discovered parent:\n");
+        output.push_str(&format!("  Title: {}\n", discovery.parent_title));
+        output.push_str(&format!("  Child pages: {}\n", discovery.child_pages.len()));
+        output.push_str(&format!(
+            "  Child databases: {}\n\n",
+            discovery.child_databases.len()
+        ));
+
+        if !discovery.matching_workspace_pages.is_empty() {
+            output.push_str("Collision:\n");
+            for page in &discovery.matching_workspace_pages {
+                output.push_str(&format!(
+                    "  Page `{}` already exists under the parent: {}\n",
+                    page.title, page.id
+                ));
+            }
+            output.push_str("  Orbexa will not adopt or overwrite this page unless it is explicitly recorded in state.\n\n");
+        }
+    }
 
     match config.notion.bootstrap.mode {
         BootstrapMode::Verify => {
@@ -77,10 +125,11 @@ mod tests {
 
     use crate::config::Config;
 
-    use super::render_init_plan;
+    use super::{
+        BootstrapDiscovery, DiscoveredObject, render_init_plan, render_init_plan_with_discovery,
+    };
 
-    #[test]
-    fn renders_create_plan() {
+    fn sample_config() -> Config {
         let source = r#"
 schema = "orbexa/config@1"
 
@@ -110,7 +159,12 @@ on_missing = "mark_stale"
 on_drift = "warn_and_skip"
 "#;
 
-        let config: Config = toml::from_str(source).expect("config should parse");
+        toml::from_str(source).expect("config should parse")
+    }
+
+    #[test]
+    fn renders_create_plan() {
+        let config = sample_config();
         let plan = render_init_plan(
             &PathBuf::from("/tmp/config.toml"),
             &PathBuf::from("/tmp/state/orbexa"),
@@ -121,5 +175,32 @@ on_drift = "warn_and_skip"
         assert!(plan.contains("Page         Codexa"));
         assert!(plan.contains("Database     Knowledge"));
         assert!(plan.contains("Data source  Documents"));
+    }
+
+    #[test]
+    fn renders_collision_when_workspace_page_exists() {
+        let config = sample_config();
+        let discovery = BootstrapDiscovery {
+            parent_title: "Codexa Test".into(),
+            matching_workspace_pages: vec![DiscoveredObject {
+                id: "abc".into(),
+                title: "Codexa".into(),
+            }],
+            child_pages: vec![DiscoveredObject {
+                id: "abc".into(),
+                title: "Codexa".into(),
+            }],
+            child_databases: Vec::new(),
+        };
+
+        let plan = render_init_plan_with_discovery(
+            &PathBuf::from("/tmp/config.toml"),
+            &PathBuf::from("/tmp/state/orbexa"),
+            &config,
+            Some(&discovery),
+        );
+
+        assert!(plan.contains("Collision:"));
+        assert!(plan.contains("Page `Codexa` already exists"));
     }
 }
