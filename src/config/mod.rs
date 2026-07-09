@@ -51,6 +51,55 @@ pub struct WorkspaceConfig {
     pub page_name: String,
     pub database_name: String,
     pub data_sources: DataSourcesConfig,
+    #[serde(default)]
+    pub appearance: WorkspaceAppearance,
+}
+
+/// Optional Notion appearance defaults for created workspace objects.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct WorkspaceAppearance {
+    #[serde(default = "default_icon")]
+    pub icon: WorkspaceIcon,
+    #[serde(default = "default_cover")]
+    pub cover: WorkspaceCover,
+}
+
+impl Default for WorkspaceAppearance {
+    fn default() -> Self {
+        Self {
+            icon: default_icon(),
+            cover: default_cover(),
+        }
+    }
+}
+
+/// Notion page icon config.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WorkspaceIcon {
+    Emoji { emoji: String },
+    Icon { name: String, color: String },
+    External { url: String },
+}
+
+/// Notion page cover config.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WorkspaceCover {
+    External { url: String },
+}
+
+fn default_icon() -> WorkspaceIcon {
+    WorkspaceIcon::Icon {
+        name: "book".into(),
+        color: "lightgray".into(),
+    }
+}
+
+fn default_cover() -> WorkspaceCover {
+    WorkspaceCover::External {
+        url: "https://res.cloudinary.com/dicttuyma/image/upload/w_1500,h_600,c_fill,g_auto/v1742094786/banner/notion_22.jpg".into(),
+    }
 }
 
 /// Configured data sources.
@@ -188,7 +237,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_minimal_config() {
+    fn parses_minimal_config_with_default_appearance() {
         let source = r#"
 schema = "orbexa/config@1"
 
@@ -226,5 +275,68 @@ on_drift = "warn_and_skip"
         assert_eq!(config.workspace.page_name, "Codexa");
         assert_eq!(config.workspace.database_name, "Knowledge");
         assert_eq!(config.workspace.data_sources.documents.name, "Documents");
+
+        assert_eq!(
+            config.workspace.appearance.icon,
+            WorkspaceIcon::Icon {
+                name: "book".into(),
+                color: "lightgray".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_explicit_appearance() {
+        let source = r#"
+schema = "orbexa/config@1"
+
+[notion]
+api_version = "2026-03-11"
+parent_page_id = "398a1865b187802aa885d97afc99896f"
+
+[notion.bootstrap]
+mode = "create"
+root = "parent_page"
+
+[workspace]
+page_name = "Codexa"
+database_name = "Knowledge"
+
+[workspace.appearance.icon]
+type = "emoji"
+emoji = "📚"
+
+[workspace.appearance.cover]
+type = "external"
+url = "https://example.com/cover.jpg"
+
+[workspace.data_sources.documents]
+name = "Documents"
+kind = "documents"
+
+[artifacts]
+input = "../codexa/dist/notion"
+
+[sync]
+mode = "export"
+managed_by = "orbexa"
+on_missing = "mark_stale"
+on_drift = "warn_and_skip"
+"#;
+
+        let config: Config = toml::from_str(source).expect("config should parse");
+
+        assert_eq!(
+            config.workspace.appearance.icon,
+            WorkspaceIcon::Emoji {
+                emoji: "📚".into()
+            }
+        );
+        assert_eq!(
+            config.workspace.appearance.cover,
+            WorkspaceCover::External {
+                url: "https://example.com/cover.jpg".into(),
+            }
+        );
     }
 }

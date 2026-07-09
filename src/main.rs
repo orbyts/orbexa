@@ -4,6 +4,7 @@ use orbexa::{
     config::{LoadedConfig, load_config, resolve_config_path, resolve_state_dir},
     notion::{Block, NotionClient, Page},
     plan::{BootstrapDiscovery, DiscoveredObject, render_init_plan_with_discovery},
+    state::{State, write_state},
 };
 
 fn main() -> ExitCode {
@@ -124,7 +125,18 @@ fn init(
     let workspace_page = client.create_child_page(
         &loaded.config.notion.parent_page_id,
         &loaded.config.workspace.page_name,
+        &loaded.config.workspace.appearance.icon,
+        &loaded.config.workspace.appearance.cover,
     )?;
+
+    let state = State::workspace_page(
+        loaded.config.notion.parent_page_id.clone(),
+        workspace_page.id.clone(),
+        loaded.config.workspace.page_name.clone(),
+        workspace_page.url.clone(),
+    );
+
+    let state_path = write_state(&state_dir, &state)?;
 
     println!("Orbexa init");
     println!();
@@ -133,6 +145,12 @@ fn init(
         "  Page {} {}",
         loaded.config.workspace.page_name, workspace_page.id
     );
+    if let Some(url) = &workspace_page.url {
+        println!("  URL  {url}");
+    }
+    println!();
+    println!("Wrote:");
+    println!("  {}", state_path.display());
     println!();
     println!("Next:");
     println!("  Database creation is not implemented yet.");

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::{WorkspaceCover, WorkspaceIcon};
+
 /// Minimal Notion API client.
 #[derive(Debug, Clone)]
 pub struct NotionClient {
@@ -49,6 +51,8 @@ impl NotionClient {
         &self,
         parent_page_id: &str,
         title: &str,
+        icon: &WorkspaceIcon,
+        cover: &WorkspaceCover,
     ) -> Result<Page, NotionError> {
         let request = CreatePageRequest {
             parent: PageParent {
@@ -61,6 +65,8 @@ impl NotionClient {
                     }],
                 },
             },
+            icon: PageIcon::from(icon),
+            cover: PageCover::from(cover),
         };
 
         let response = self
@@ -136,6 +142,8 @@ impl NotionClient {
 struct CreatePageRequest<'a> {
     parent: PageParent<'a>,
     properties: PageTitleProperties<'a>,
+    icon: PageIcon<'a>,
+    cover: PageCover<'a>,
 }
 
 #[derive(Debug, Serialize)]
@@ -163,12 +171,62 @@ struct TextContent<'a> {
     content: &'a str,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum PageIcon<'a> {
+    Emoji { emoji: &'a str },
+    Icon { icon: NotionNativeIcon<'a> },
+    External { external: ExternalFile<'a> },
+}
+
+impl<'a> From<&'a WorkspaceIcon> for PageIcon<'a> {
+    fn from(icon: &'a WorkspaceIcon) -> Self {
+        match icon {
+            WorkspaceIcon::Emoji { emoji } => Self::Emoji { emoji },
+            WorkspaceIcon::Icon { name, color } => Self::Icon {
+                icon: NotionNativeIcon { name, color },
+            },
+            WorkspaceIcon::External { url } => Self::External {
+                external: ExternalFile { url },
+            },
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct NotionNativeIcon<'a> {
+    name: &'a str,
+    color: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum PageCover<'a> {
+    External { external: ExternalFile<'a> },
+}
+
+impl<'a> From<&'a WorkspaceCover> for PageCover<'a> {
+    fn from(cover: &'a WorkspaceCover) -> Self {
+        match cover {
+            WorkspaceCover::External { url } => Self::External {
+                external: ExternalFile { url },
+            },
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalFile<'a> {
+    url: &'a str,
+}
+
 /// Minimal page response shape.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Page {
     pub object: String,
     pub id: String,
     pub properties: serde_json::Value,
+    pub url: Option<String>,
 }
 
 impl Page {
@@ -277,7 +335,8 @@ impl From<serde_json::Error> for NotionError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Block, Page};
+    use super::{Block, Page, PageCover, PageIcon};
+    use crate::config::{WorkspaceCover, WorkspaceIcon};
 
     #[test]
     fn extracts_page_title() {
@@ -285,6 +344,7 @@ mod tests {
 {
   "object": "page",
   "id": "398a1865-b187-802a-a885-d97afc99896f",
+  "url": "https://app.notion.com/p/Codexa-Test",
   "properties": {
     "title": {
       "id": "title",
@@ -335,5 +395,33 @@ mod tests {
 
         let block: Block = serde_json::from_str(json).expect("block should parse");
         assert_eq!(block.title(), Some("Knowledge"));
+    }
+
+    #[test]
+    fn serializes_native_icon() {
+        let workspace_icon = WorkspaceIcon::Icon {
+            name: "book".into(),
+            color: "lightgray".into(),
+        };
+        let icon = PageIcon::from(&workspace_icon);
+
+        let json = serde_json::to_value(icon).expect("icon should serialize");
+
+        assert_eq!(json["type"], "icon");
+        assert_eq!(json["icon"]["name"], "book");
+        assert_eq!(json["icon"]["color"], "lightgray");
+    }
+
+    #[test]
+    fn serializes_external_cover() {
+        let workspace_cover = WorkspaceCover::External {
+            url: "https://example.com/cover.jpg".into(),
+        };
+        let cover = PageCover::from(&workspace_cover);
+
+        let json = serde_json::to_value(cover).expect("cover should serialize");
+
+        assert_eq!(json["type"], "external");
+        assert_eq!(json["external"]["url"], "https://example.com/cover.jpg");
     }
 }
