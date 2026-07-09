@@ -1,7 +1,8 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
 use orbexa::{
-    config::{load_config, resolve_config_path, resolve_state_dir},
+    config::{LoadedConfig, load_config, resolve_config_path, resolve_state_dir},
+    notion::NotionClient,
     plan::render_init_plan,
 };
 
@@ -29,6 +30,10 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
             print_help();
             Ok(())
         }
+        [command] if command == "check" => check(None),
+        [command, config_flag, config_path] if command == "check" && config_flag == "--config" => {
+            check(Some(PathBuf::from(config_path)))
+        }
         [command, flag] if command == "init" && flag == "--dry-run" => init(None, true),
         [command, config_flag, config_path, dry_run_flag]
             if command == "init" && config_flag == "--config" && dry_run_flag == "--dry-run" =>
@@ -51,18 +56,45 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+fn check(explicit_config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_orbexa_config(explicit_config_path)?;
+    let token = notion_token()?;
+
+    let client = NotionClient::new(token, loaded.config.notion.api_version.clone());
+    let parent = client.retrieve_page(&loaded.config.notion.parent_page_id)?;
+
+    println!("Orbexa check");
+    println!();
+    println!("Config:");
+    println!("  {}", loaded.path.display());
+    println!();
+    println!("Notion:");
+    println!("  parent page id: {}", parent.id);
+    println!(
+        "  parent title:   {}",
+        parent.title().unwrap_or_else(|| "<untitled>".into())
+    );
+    println!("  api version:    {}", loaded.config.notion.api_version);
+    println!();
+    println!("Workspace target:");
+    println!("  page:        {}", loaded.config.workspace.page_name);
+    println!("  database:    {}", loaded.config.workspace.database_name);
+    println!(
+        "  data source: {}",
+        loaded.config.workspace.data_sources.documents.name
+    );
+
+    Ok(())
+}
+
 fn init(
     explicit_config_path: Option<PathBuf>,
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let config_path = resolve_config_path(explicit_config_path)?;
-    let loaded = load_config(&config_path)?;
+    let loaded = load_orbexa_config(explicit_config_path)?;
     let state_dir = resolve_state_dir()?;
 
-    let token = env::var("NOTION_TOKEN").map_err(|_| "NOTION_TOKEN is not set")?;
-    if token.trim().is_empty() {
-        return Err("NOTION_TOKEN is empty".into());
-    }
+    notion_token()?;
 
     if dry_run {
         print!(
@@ -75,9 +107,29 @@ fn init(
     Err("orbexa init without --dry-run is not implemented yet".into())
 }
 
+fn load_orbexa_config(
+    explicit_config_path: Option<PathBuf>,
+) -> Result<LoadedConfig, Box<dyn std::error::Error>> {
+    let config_path = resolve_config_path(explicit_config_path)?;
+    let loaded = load_config(&config_path)?;
+    Ok(loaded)
+}
+
+fn notion_token() -> Result<String, Box<dyn std::error::Error>> {
+    let token = env::var("NOTION_API_KEY")
+        .or_else(|_| env::var("NOTION_TOKEN"))
+        .map_err(|_| "neither NOTION_API_KEY nor NOTION_TOKEN is set")?;
+
+    if token.trim().is_empty() {
+        return Err("Notion API token is empty".into());
+    }
+
+    Ok(token)
+}
+
 fn print_help() {
     println!(
-        "Orbexa {}\n\nApplies Codexa-generated Notion artifacts to managed Notion pages, databases, and data sources.\n\nUSAGE:\n    orbexa init [--dry-run] [--config <PATH>]\n    orbexa [OPTIONS]\n\nOPTIONS:\n    -h, --help       Print help\n    -V, --version    Print version",
+        "Orbexa {}\n\nApplies Codexa-generated Notion artifacts to managed Notion pages, databases, and data sources.\n\nUSAGE:\n    orbexa check [--config <PATH>]\n    orbexa init [--dry-run] [--config <PATH>]\n    orbexa [OPTIONS]\n\nOPTIONS:\n    -h, --help       Print help\n    -V, --version    Print version",
         orbexa::VERSION
     );
 }

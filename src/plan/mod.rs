@@ -21,7 +21,7 @@ pub fn render_init_plan(config_path: &Path, state_dir: &Path, config: &Config) -
     output.push_str(&format!("  {mode}\n\n"));
 
     output.push_str("Verify:\n");
-    output.push_str("  NOTION_TOKEN present\n");
+    output.push_str("  NOTION_API_KEY or NOTION_TOKEN present\n");
     output.push_str(&format!(
         "  Parent page reachable: {}\n",
         config.notion.parent_page_id

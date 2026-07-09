@@ -4,6 +4,7 @@
 //! pages, databases, and data sources.
 
 pub mod config;
+pub mod notion;
 pub mod plan;
 
 /// Current Orbexa package version.
