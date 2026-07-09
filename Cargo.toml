@@ -1,6 +1,28 @@
 [package]
 name = "orbexa"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
+rust-version = "1.85"
+description = "Rust CLI for applying Codexa-generated Notion artifacts to managed Notion data sources and pages."
+license = "MIT"
+repository = "https://github.com/orbyts/orbexa"
+homepage = "https://github.com/orbyts/orbexa"
+documentation = "https://docs.rs/orbexa"
+readme = "README.md"
+keywords = ["notion", "markdown", "knowledge", "sync", "git"]
+categories = ["command-line-utilities", "development-tools"]
+
+[lib]
+name = "orbexa"
+path = "src/lib.rs"
+
+[[bin]]
+name = "orbexa"
+path = "src/main.rs"
 
 [dependencies]
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3.20"
