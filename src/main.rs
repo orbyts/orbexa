@@ -121,7 +121,23 @@ fn init(
         .into());
     }
 
-    Err("orbexa init without --dry-run is not implemented yet".into())
+    let workspace_page = client.create_child_page(
+        &loaded.config.notion.parent_page_id,
+        &loaded.config.workspace.page_name,
+    )?;
+
+    println!("Orbexa init");
+    println!();
+    println!("Created:");
+    println!(
+        "  Page {} {}",
+        loaded.config.workspace.page_name, workspace_page.id
+    );
+    println!();
+    println!("Next:");
+    println!("  Database creation is not implemented yet.");
+
+    Ok(())
 }
 
 fn build_discovery(loaded: &LoadedConfig, parent: &Page, children: &[Block]) -> BootstrapDiscovery {

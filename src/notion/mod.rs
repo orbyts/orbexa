@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Minimal Notion API client.
 #[derive(Debug, Clone)]
@@ -28,6 +28,47 @@ impl NotionClient {
             .get(url)
             .bearer_auth(&self.token)
             .header("Notion-Version", &self.api_version)
+            .send()?;
+
+        let status = response.status();
+        let text = response.text()?;
+
+        if !status.is_success() {
+            return Err(NotionError::Api {
+                status: status.as_u16(),
+                body: text,
+            });
+        }
+
+        let page = serde_json::from_str(&text)?;
+        Ok(page)
+    }
+
+    /// Creates a child page under an existing page.
+    pub fn create_child_page(
+        &self,
+        parent_page_id: &str,
+        title: &str,
+    ) -> Result<Page, NotionError> {
+        let request = CreatePageRequest {
+            parent: PageParent {
+                page_id: parent_page_id,
+            },
+            properties: PageTitleProperties {
+                title: TitleProperty {
+                    title: vec![RichText {
+                        text: TextContent { content: title },
+                    }],
+                },
+            },
+        };
+
+        let response = self
+            .http
+            .post("https://api.notion.com/v1/pages")
+            .bearer_auth(&self.token)
+            .header("Notion-Version", &self.api_version)
+            .json(&request)
             .send()?;
 
         let status = response.status();
@@ -89,6 +130,37 @@ impl NotionClient {
 
         Ok(blocks)
     }
+}
+
+#[derive(Debug, Serialize)]
+struct CreatePageRequest<'a> {
+    parent: PageParent<'a>,
+    properties: PageTitleProperties<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct PageParent<'a> {
+    page_id: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct PageTitleProperties<'a> {
+    title: TitleProperty<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct TitleProperty<'a> {
+    title: Vec<RichText<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct RichText<'a> {
+    text: TextContent<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct TextContent<'a> {
+    content: &'a str,
 }
 
 /// Minimal page response shape.
