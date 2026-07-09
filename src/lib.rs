@@ -6,6 +6,7 @@
 pub mod config;
 pub mod notion;
 pub mod plan;
+pub mod registry;
 pub mod state;
 
 /// Current Orbexa package version.

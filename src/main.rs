@@ -4,6 +4,9 @@ use orbexa::{
     config::{LoadedConfig, load_config, resolve_config_path, resolve_state_dir},
     notion::{Block, NotionClient, Page},
     plan::{BootstrapDiscovery, DiscoveredObject, render_init_plan_with_discovery},
+    registry::{
+        load_registry, registry_from_workspace_page, resolve_registry_path, write_registry,
+    },
     state::{State, write_state},
 };
 
@@ -94,9 +97,41 @@ fn init(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let loaded = load_orbexa_config(explicit_config_path)?;
     let state_dir = resolve_state_dir()?;
+    let registry_path = resolve_registry_path(&loaded.config)?;
     let token = notion_token()?;
 
     let client = NotionClient::new(token, loaded.config.notion.api_version.clone());
+
+    if let Some(loaded_registry) = load_registry(&registry_path)? {
+        let workspace_page =
+            client.retrieve_page(&loaded_registry.registry.notion.workspace_page_id)?;
+
+        println!("Orbexa init");
+        println!();
+        println!("Already initialized:");
+        println!("  Registry: {}", loaded_registry.path.display());
+        println!(
+            "  Workspace page: {}",
+            loaded_registry.registry.notion.workspace_page_name
+        );
+        println!(
+            "  Page ID: {}",
+            loaded_registry.registry.notion.workspace_page_id
+        );
+        println!(
+            "  Notion title: {}",
+            workspace_page
+                .title()
+                .unwrap_or_else(|| "<untitled>".into())
+        );
+        if let Some(url) = &loaded_registry.registry.notion.workspace_page_url {
+            println!("  URL: {url}");
+        }
+        println!();
+        println!("No changes made.");
+        return Ok(());
+    }
+
     let parent = client.retrieve_page(&loaded.config.notion.parent_page_id)?;
     let children = client.retrieve_block_children(&loaded.config.notion.parent_page_id)?;
     let discovery = build_discovery(&loaded, &parent, &children);
@@ -111,6 +146,9 @@ fn init(
                 Some(&discovery),
             )
         );
+        println!();
+        println!("Would write registry:");
+        println!("  {}", registry_path.display());
         return Ok(());
     }
 
@@ -135,8 +173,14 @@ fn init(
         loaded.config.workspace.page_name.clone(),
         workspace_page.url.clone(),
     );
-
     let state_path = write_state(&state_dir, &state)?;
+
+    let registry = registry_from_workspace_page(
+        &loaded.config,
+        workspace_page.id.clone(),
+        workspace_page.url.clone(),
+    );
+    let written_registry_path = write_registry(&registry_path, &registry)?;
 
     println!("Orbexa init");
     println!();
@@ -151,6 +195,7 @@ fn init(
     println!();
     println!("Wrote:");
     println!("  {}", state_path.display());
+    println!("  {}", written_registry_path.display());
     println!();
     println!("Next:");
     println!("  Database creation is not implemented yet.");
