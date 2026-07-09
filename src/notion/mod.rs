@@ -92,6 +92,70 @@ impl NotionClient {
         Ok(page)
     }
 
+    /// Creates a document page under a Notion data source.
+    pub fn create_document_page(
+        &self,
+        data_source_id: &str,
+        title: &str,
+        description: &str,
+        kind: &str,
+        tags: &[String],
+        status: &str,
+        markdown: &str,
+    ) -> Result<Page, NotionError> {
+        let request = CreateDocumentPageRequest {
+            parent: DataSourceParent { data_source_id },
+            properties: DocumentPageProperties {
+                name: TitlePropertyValue {
+                    title: vec![RichText {
+                        text: TextContent { content: title },
+                    }],
+                },
+                description: RichTextPropertyValue {
+                    rich_text: vec![RichText {
+                        text: TextContent {
+                            content: description,
+                        },
+                    }],
+                },
+                kind: SelectPropertyValue {
+                    select: SelectOption { name: kind },
+                },
+                tags: MultiSelectPropertyValue {
+                    multi_select: tags
+                        .iter()
+                        .map(|tag| SelectOption { name: tag.as_str() })
+                        .collect(),
+                },
+                status: SelectPropertyValue {
+                    select: SelectOption { name: status },
+                },
+            },
+            markdown,
+        };
+
+        let response = self
+            .http
+            .post("https://api.notion.com/v1/pages")
+            .bearer_auth(&self.token)
+            .header("Notion-Version", &self.api_version)
+            .json(&request)
+            .send()?;
+
+        let status = response.status();
+        let text = response.text()?;
+
+        if !status.is_success() {
+            return Err(NotionError::Api {
+                status: status.as_u16(),
+                body: text,
+            });
+        }
+
+        let page = serde_json::from_str(&text)?;
+        Ok(page)
+    }
+
     /// Creates a database under an existing page with an initial data source.
     pub fn create_database(
         &self,
@@ -190,6 +254,57 @@ impl NotionClient {
 
         Ok(blocks)
     }
+}
+
+#[derive(Debug, Serialize)]
+struct CreateDocumentPageRequest<'a> {
+    parent: DataSourceParent<'a>,
+    properties: DocumentPageProperties<'a>,
+    markdown: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct DataSourceParent<'a> {
+    data_source_id: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct DocumentPageProperties<'a> {
+    #[serde(rename = "Name")]
+    name: TitlePropertyValue<'a>,
+    #[serde(rename = "Description")]
+    description: RichTextPropertyValue<'a>,
+    #[serde(rename = "Kind")]
+    kind: SelectPropertyValue<'a>,
+    #[serde(rename = "Tags")]
+    tags: MultiSelectPropertyValue<'a>,
+    #[serde(rename = "Status")]
+    status: SelectPropertyValue<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct TitlePropertyValue<'a> {
+    title: Vec<RichText<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct RichTextPropertyValue<'a> {
+    rich_text: Vec<RichText<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct SelectPropertyValue<'a> {
+    select: SelectOption<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct MultiSelectPropertyValue<'a> {
+    multi_select: Vec<SelectOption<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct SelectOption<'a> {
+    name: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -476,8 +591,62 @@ impl From<serde_json::Error> for NotionError {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     use super::{Block, Database, Page, PageCover, PageIcon};
     use crate::config::{WorkspaceCover, WorkspaceIcon};
+
+    #[test]
+    fn serializes_document_page_properties() {
+        let request = CreateDocumentPageRequest {
+            parent: DataSourceParent {
+                data_source_id: "data-source-id",
+            },
+            properties: DocumentPageProperties {
+                name: TitlePropertyValue {
+                    title: vec![RichText {
+                        text: TextContent { content: "Title" },
+                    }],
+                },
+                description: RichTextPropertyValue {
+                    rich_text: vec![RichText {
+                        text: TextContent {
+                            content: "Description",
+                        },
+                    }],
+                },
+                kind: SelectPropertyValue {
+                    select: SelectOption { name: "playbook" },
+                },
+                tags: MultiSelectPropertyValue {
+                    multi_select: vec![SelectOption { name: "lureva" }],
+                },
+                status: SelectPropertyValue {
+                    select: SelectOption { name: "active" },
+                },
+            },
+            markdown: "# Body",
+        };
+
+        let json = serde_json::to_value(request).expect("request should serialize");
+
+        assert_eq!(json["parent"]["data_source_id"], "data-source-id");
+        assert_eq!(
+            json["properties"]["Name"]["title"][0]["text"]["content"],
+            "Title"
+        );
+        assert_eq!(
+            json["properties"]["Description"]["rich_text"][0]["text"]["content"],
+            "Description"
+        );
+        assert_eq!(json["properties"]["Kind"]["select"]["name"], "playbook");
+        assert_eq!(
+            json["properties"]["Tags"]["multi_select"][0]["name"],
+            "lureva"
+        );
+        assert_eq!(json["properties"]["Status"]["select"]["name"], "active");
+        assert_eq!(json["markdown"], "# Body");
+    }
 
     #[test]
     fn extracts_database_data_source() {

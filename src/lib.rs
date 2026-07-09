@@ -3,7 +3,9 @@
 //! Orbexa applies Codexa-generated Notion artifacts to managed Notion
 //! pages, databases, and data sources.
 
+pub mod artifact;
 pub mod config;
+pub mod lock;
 pub mod notion;
 pub mod plan;
 pub mod registry;

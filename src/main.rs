@@ -1,7 +1,9 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
 use orbexa::{
+    artifact::{load_manifest, load_page_artifact},
     config::{LoadedConfig, load_config, resolve_config_path, resolve_state_dir},
+    lock::{load_lock, locked_page, resolve_lock_path, upsert_locked_page, write_lock},
     notion::{Block, NotionClient, Page},
     plan::{BootstrapDiscovery, DiscoveredObject, render_init_plan_with_discovery},
     registry::{
@@ -54,6 +56,10 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
             init(Some(PathBuf::from(config_path)), false)
         }
         [command] if command == "init" => init(None, false),
+        [command, input] if command == "apply" => apply(PathBuf::from(input), false),
+        [command, input, flag] if command == "apply" && flag == "--dry-run" => {
+            apply(PathBuf::from(input), true)
+        }
         _ => {
             print_help();
             Err("invalid arguments".into())
@@ -88,6 +94,121 @@ fn check(explicit_config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error
         "  data source: {}",
         loaded.config.workspace.data_sources.documents.name
     );
+
+    Ok(())
+}
+
+fn apply(input_dir: PathBuf, dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded_config = load_orbexa_config(None)?;
+    let registry_path = resolve_registry_path(&loaded_config.config)?;
+    let loaded_registry = load_registry(&registry_path)?
+        .ok_or("workspace registry is missing; run `orbexa init` first")?;
+
+    if loaded_registry.registry.notion.database.id.is_empty()
+        || loaded_registry
+            .registry
+            .notion
+            .data_sources
+            .documents
+            .id
+            .is_empty()
+    {
+        return Err(
+            "workspace registry is missing database/data source IDs; run `orbexa init` first"
+                .into(),
+        );
+    }
+
+    let manifest = load_manifest(&input_dir)?;
+    let lock_path = resolve_lock_path(&loaded_registry.registry.name)?;
+    let mut lock = load_lock(&lock_path)?;
+
+    println!("Orbexa apply");
+    println!();
+    println!("Input:");
+    println!("  {}", input_dir.display());
+    println!("Manifest:");
+    println!("  {}", manifest.path.display());
+    println!("Registry:");
+    println!("  {}", loaded_registry.path.display());
+    println!("Lock:");
+    println!("  {}", lock_path.display());
+    println!();
+
+    let token = notion_token()?;
+    let client = NotionClient::new(token, loaded_config.config.notion.api_version.clone());
+
+    for page_entry in &manifest.manifest.pages {
+        let loaded_page = load_page_artifact(&input_dir, &page_entry.path)?;
+        let artifact = loaded_page.artifact;
+
+        if artifact.target.workspace != loaded_registry.registry.name.to_lowercase()
+            && artifact.target.workspace != loaded_registry.registry.name
+        {
+            return Err(format!(
+                "artifact `{}` targets workspace `{}`, but loaded registry is `{}`",
+                artifact.document.id, artifact.target.workspace, loaded_registry.registry.name
+            )
+            .into());
+        }
+
+        if artifact.target.data_source
+            != loaded_registry.registry.notion.data_sources.documents.kind
+            && artifact.target.data_source != "documents"
+        {
+            return Err(format!(
+                "artifact `{}` targets unsupported data source `{}`",
+                artifact.document.id, artifact.target.data_source
+            )
+            .into());
+        }
+
+        if let Some(existing) = locked_page(&lock, &artifact.document.id) {
+            println!("Skip:");
+            println!(
+                "  {} already synced to {}",
+                artifact.document.id, existing.notion_page_id
+            );
+            continue;
+        }
+
+        if dry_run {
+            println!("Would create:");
+            println!("  {} → Notion page", artifact.document.id);
+            println!("  Title: {}", artifact.document.title);
+            println!("  Description: {}", artifact.document.description);
+            println!("  Kind: {}", artifact.document.kind);
+            println!("  Tags: {}", artifact.document.tags.join(", "));
+            println!("  Status: {}", artifact.document.status);
+            println!();
+            continue;
+        }
+
+        let page = client.create_document_page(
+            &loaded_registry.registry.notion.data_sources.documents.id,
+            &artifact.document.title,
+            &artifact.document.description,
+            &artifact.document.kind,
+            &artifact.document.tags,
+            &artifact.document.status,
+            &artifact.content.markdown,
+        )?;
+
+        upsert_locked_page(&mut lock, &artifact, page.id.clone(), page.url.clone());
+
+        println!("Created:");
+        println!("  {} {}", artifact.document.id, page.id);
+        if let Some(url) = &page.url {
+            println!("  URL {url}");
+        }
+        println!();
+    }
+
+    if !dry_run {
+        let written_lock_path = write_lock(&lock_path, &lock)?;
+        println!("Wrote:");
+        println!("  {}", written_lock_path.display());
+    }
 
     Ok(())
 }
@@ -335,7 +456,7 @@ fn notion_token() -> Result<String, Box<dyn std::error::Error>> {
 
 fn print_help() {
     println!(
-        "Orbexa {}\n\nApplies Codexa-generated Notion artifacts to managed Notion pages, databases, and data sources.\n\nUSAGE:\n    orbexa check [--config <PATH>]\n    orbexa init [--dry-run] [--config <PATH>]\n    orbexa [OPTIONS]\n\nOPTIONS:\n    -h, --help       Print help\n    -V, --version    Print version",
+        "Orbexa {}\n\nApplies Codexa-generated Notion artifacts to managed Notion pages, databases, and data sources.\n\nUSAGE:\n    orbexa check [--config <PATH>]\n    orbexa init [--dry-run] [--config <PATH>]\n    orbexa apply <ARTIFACT_DIR> [--dry-run]\n    orbexa [OPTIONS]\n\nOPTIONS:\n    -h, --help       Print help\n    -V, --version    Print version",
         orbexa::VERSION
     );
 }
