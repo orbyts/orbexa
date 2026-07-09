@@ -92,6 +92,29 @@ impl NotionClient {
         Ok(page)
     }
 
+    /// Retrieves a Notion database by ID.
+    pub fn retrieve_database(&self, database_id: &str) -> Result<Database, NotionError> {
+        let response = self
+            .http
+            .get(format!("https://api.notion.com/v1/databases/{database_id}"))
+            .bearer_auth(&self.token)
+            .header("Notion-Version", &self.api_version)
+            .send()?;
+
+        let status = response.status();
+        let text = response.text()?;
+
+        if !status.is_success() {
+            return Err(NotionError::Api {
+                status: status.as_u16(),
+                body: text,
+            });
+        }
+
+        let database = serde_json::from_str(&text)?;
+        Ok(database)
+    }
+
     /// Creates a document page under a Notion data source.
     pub fn create_document_page(
         &self,
@@ -457,6 +480,8 @@ struct ExternalFile<'a> {
 pub struct Database {
     pub object: String,
     pub id: String,
+    #[serde(default)]
+    pub in_trash: bool,
     pub data_sources: Vec<DatabaseDataSource>,
     pub url: Option<String>,
 }
@@ -481,6 +506,8 @@ impl Database {
 pub struct Page {
     pub object: String,
     pub id: String,
+    #[serde(default)]
+    pub in_trash: bool,
     pub properties: serde_json::Value,
     pub url: Option<String>,
 }
