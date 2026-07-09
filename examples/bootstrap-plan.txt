@@ -1,0 +1,17 @@
+orbexa init --config "$XDG_CONFIG_HOME/orbexa/config.toml" --dry-run
+
+Expected create-mode plan:
+
+Create:
+  Page         Codexa
+  Database     Knowledge
+  Data source  Documents
+
+Verify:
+  NOTION_TOKEN
+  Parent page access
+  Documents schema
+
+Write:
+  $XDG_STATE_HOME/orbexa/state.toml
+  $XDG_STATE_HOME/orbexa/notion.lock

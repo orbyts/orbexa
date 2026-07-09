@@ -1,0 +1,26 @@
+schema = "orbexa/config@1"
+
+[notion]
+api_version = "2026-03-11"
+parent_page_id = "replace-with-shared-parent-page-id"
+
+[notion.bootstrap]
+mode = "create"
+root = "parent_page"
+
+[workspace]
+page_name = "Codexa"
+database_name = "Knowledge"
+
+[workspace.data_sources.documents]
+name = "Documents"
+kind = "documents"
+
+[artifacts]
+input = "../codexa/dist/notion"
+
+[sync]
+mode = "export"
+managed_by = "orbexa"
+on_missing = "mark_stale"
+on_drift = "warn_and_skip"
