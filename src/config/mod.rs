@@ -113,6 +113,8 @@ pub struct DataSourcesConfig {
 pub struct DataSourceConfig {
     pub name: String,
     pub kind: String,
+    #[serde(default)]
+    pub appearance: Option<WorkspaceAppearance>,
 }
 
 /// Artifact input config.
@@ -256,7 +258,6 @@ database_name = "Knowledge"
 [workspace.data_sources.documents]
 name = "Documents"
 kind = "documents"
-
 [artifacts]
 input = "../codexa/dist/notion"
 
@@ -275,6 +276,7 @@ on_drift = "warn_and_skip"
         assert_eq!(config.workspace.page_name, "Codexa");
         assert_eq!(config.workspace.database_name, "Knowledge");
         assert_eq!(config.workspace.data_sources.documents.name, "Documents");
+        assert_eq!(config.workspace.data_sources.documents.appearance, None);
 
         assert_eq!(
             config.workspace.appearance.icon,
@@ -314,6 +316,14 @@ url = "https://example.com/cover.jpg"
 name = "Documents"
 kind = "documents"
 
+[workspace.data_sources.documents.appearance.icon]
+type = "emoji"
+emoji = "📘"
+
+[workspace.data_sources.documents.appearance.cover]
+type = "external"
+url = "https://example.com/documents-cover.jpg"
+
 [artifacts]
 input = "../codexa/dist/notion"
 
@@ -336,6 +346,26 @@ on_drift = "warn_and_skip"
             config.workspace.appearance.cover,
             WorkspaceCover::External {
                 url: "https://example.com/cover.jpg".into(),
+            }
+        );
+
+        let documents_appearance = config
+            .workspace
+            .data_sources
+            .documents
+            .appearance
+            .expect("documents appearance should parse");
+
+        assert_eq!(
+            documents_appearance.icon,
+            WorkspaceIcon::Emoji {
+                emoji: "📘".into()
+            }
+        );
+        assert_eq!(
+            documents_appearance.cover,
+            WorkspaceCover::External {
+                url: "https://example.com/documents-cover.jpg".into(),
             }
         );
     }

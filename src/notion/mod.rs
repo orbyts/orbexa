@@ -128,6 +128,8 @@ impl NotionClient {
         status: &str,
         visibility: &str,
         markdown: &str,
+        icon: &WorkspaceIcon,
+        cover: &WorkspaceCover,
     ) -> Result<Page, NotionError> {
         let request = CreateDocumentPageRequest {
             parent: DataSourceParent { data_source_id },
@@ -167,6 +169,8 @@ impl NotionClient {
                 },
             },
             markdown,
+            icon: PageIcon::from(icon),
+            cover: PageCover::from(cover),
         };
 
         let response = self
@@ -296,6 +300,8 @@ struct CreateDocumentPageRequest<'a> {
     parent: DataSourceParent<'a>,
     properties: DocumentPageProperties<'a>,
     markdown: &'a str,
+    icon: PageIcon<'a>,
+    cover: PageCover<'a>,
 }
 
 #[derive(Debug, Serialize)]
@@ -689,6 +695,12 @@ mod tests {
                 },
             },
             markdown: "# Body",
+            icon: PageIcon::Emoji { emoji: "📘" },
+            cover: PageCover::External {
+                external: ExternalFile {
+                    url: "https://example.com/cover.png",
+                },
+            },
         };
 
         let json = serde_json::to_value(request).expect("request should serialize");
@@ -702,13 +714,24 @@ mod tests {
             json["properties"]["Description"]["rich_text"][0]["text"]["content"],
             "Description"
         );
+        assert_eq!(json["properties"]["Root"]["select"]["name"], "knowledge");
+        assert_eq!(json["properties"]["Product"]["select"]["name"], "lureva");
         assert_eq!(json["properties"]["Kind"]["select"]["name"], "playbook");
         assert_eq!(
             json["properties"]["Tags"]["multi_select"][0]["name"],
             "lureva"
         );
         assert_eq!(json["properties"]["Status"]["select"]["name"], "active");
+        assert_eq!(
+            json["properties"]["Visibility"]["select"]["name"],
+            "private"
+        );
         assert_eq!(json["markdown"], "# Body");
+        assert_eq!(json["icon"]["emoji"], "📘");
+        assert_eq!(
+            json["cover"]["external"]["url"],
+            "https://example.com/cover.png"
+        );
     }
 
     #[test]

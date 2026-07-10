@@ -385,6 +385,15 @@ Run an explicit repair/recreate command before applying artifacts.",
             continue;
         }
 
+        let page_appearance = loaded_config
+            .config
+            .workspace
+            .data_sources
+            .documents
+            .appearance
+            .as_ref()
+            .unwrap_or(&loaded_config.config.workspace.appearance);
+
         let page = client.create_document_page(
             &loaded_registry.registry.notion.data_sources.documents.id,
             &artifact.document.title,
@@ -396,6 +405,8 @@ Run an explicit repair/recreate command before applying artifacts.",
             &artifact.document.status,
             &artifact.document.visibility,
             &artifact.content.markdown,
+            &page_appearance.icon,
+            &page_appearance.cover,
         )?;
 
         upsert_locked_page(&mut lock, &artifact, page.id.clone(), page.url.clone());
