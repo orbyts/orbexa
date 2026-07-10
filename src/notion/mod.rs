@@ -121,9 +121,12 @@ impl NotionClient {
         data_source_id: &str,
         title: &str,
         description: &str,
+        root: &str,
+        product: &str,
         kind: &str,
         tags: &[String],
         status: &str,
+        visibility: &str,
         markdown: &str,
     ) -> Result<Page, NotionError> {
         let request = CreateDocumentPageRequest {
@@ -141,6 +144,12 @@ impl NotionClient {
                         },
                     }],
                 },
+                root: SelectPropertyValue {
+                    select: SelectOption { name: root },
+                },
+                product: SelectPropertyValue {
+                    select: SelectOption { name: product },
+                },
                 kind: SelectPropertyValue {
                     select: SelectOption { name: kind },
                 },
@@ -152,6 +161,9 @@ impl NotionClient {
                 },
                 status: SelectPropertyValue {
                     select: SelectOption { name: status },
+                },
+                visibility: SelectPropertyValue {
+                    select: SelectOption { name: visibility },
                 },
             },
             markdown,
@@ -297,12 +309,18 @@ struct DocumentPageProperties<'a> {
     name: TitlePropertyValue<'a>,
     #[serde(rename = "Description")]
     description: RichTextPropertyValue<'a>,
+    #[serde(rename = "Root")]
+    root: SelectPropertyValue<'a>,
+    #[serde(rename = "Product")]
+    product: SelectPropertyValue<'a>,
     #[serde(rename = "Kind")]
     kind: SelectPropertyValue<'a>,
     #[serde(rename = "Tags")]
     tags: MultiSelectPropertyValue<'a>,
     #[serde(rename = "Status")]
     status: SelectPropertyValue<'a>,
+    #[serde(rename = "Visibility")]
+    visibility: SelectPropertyValue<'a>,
 }
 
 #[derive(Debug, Serialize)]
@@ -351,12 +369,18 @@ struct DocumentProperties {
     name: TitlePropertySchema,
     #[serde(rename = "Description")]
     description: RichTextPropertySchema,
+    #[serde(rename = "Root")]
+    root: SelectPropertySchema,
+    #[serde(rename = "Product")]
+    product: SelectPropertySchema,
     #[serde(rename = "Kind")]
     kind: SelectPropertySchema,
     #[serde(rename = "Tags")]
     tags: MultiSelectPropertySchema,
     #[serde(rename = "Status")]
     status: SelectPropertySchema,
+    #[serde(rename = "Visibility")]
+    visibility: SelectPropertySchema,
 }
 
 impl Default for DocumentProperties {
@@ -364,9 +388,12 @@ impl Default for DocumentProperties {
         Self {
             name: TitlePropertySchema::default(),
             description: RichTextPropertySchema::default(),
+            root: SelectPropertySchema::default(),
+            product: SelectPropertySchema::default(),
             kind: SelectPropertySchema::default(),
             tags: MultiSelectPropertySchema::default(),
             status: SelectPropertySchema::default(),
+            visibility: SelectPropertySchema::default(),
         }
     }
 }
@@ -642,6 +669,12 @@ mod tests {
                         },
                     }],
                 },
+                root: SelectPropertyValue {
+                    select: SelectOption { name: "knowledge" },
+                },
+                product: SelectPropertyValue {
+                    select: SelectOption { name: "lureva" },
+                },
                 kind: SelectPropertyValue {
                     select: SelectOption { name: "playbook" },
                 },
@@ -650,6 +683,9 @@ mod tests {
                 },
                 status: SelectPropertyValue {
                     select: SelectOption { name: "active" },
+                },
+                visibility: SelectPropertyValue {
+                    select: SelectOption { name: "private" },
                 },
             },
             markdown: "# Body",

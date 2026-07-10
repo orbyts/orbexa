@@ -28,8 +28,12 @@ pub struct NotionPageArtifact {
     pub producer: String,
     pub producer_version: String,
     pub document: ArtifactDocument,
+    #[serde(default)]
+    pub navigation: ArtifactNavigation,
     pub source: ArtifactSource,
     pub target: ArtifactTarget,
+    #[serde(default)]
+    pub web: Option<ArtifactWeb>,
     pub content: ArtifactContent,
 }
 
@@ -47,6 +51,26 @@ pub struct ArtifactDocument {
     pub tags: Vec<String>,
 }
 
+/// Shared tree/navigation placement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactNavigation {
+    pub root: String,
+    pub product: String,
+    pub section: Option<String>,
+    pub order: Option<i64>,
+}
+
+impl Default for ArtifactNavigation {
+    fn default() -> Self {
+        Self {
+            root: "knowledge".into(),
+            product: "general".into(),
+            section: None,
+            order: None,
+        }
+    }
+}
+
 /// Source provenance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactSource {
@@ -61,6 +85,13 @@ pub struct ArtifactSource {
 pub struct ArtifactTarget {
     pub workspace: String,
     pub data_source: String,
+}
+
+/// Website placement metadata emitted by Codexa.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactWeb {
+    pub collection: String,
+    pub slug: String,
 }
 
 /// Page body content.
@@ -168,6 +199,12 @@ mod tests {
     "visibility": "private",
     "tags": ["test"]
   },
+  "navigation": {
+    "root": "docs",
+    "product": "codexa",
+    "section": "Guides",
+    "order": 10
+  },
   "source": {
     "repository": "archivora/knowledge",
     "path": "notes/example.md",
@@ -190,6 +227,8 @@ mod tests {
 
         assert_eq!(artifact.document.id, "notes.example");
         assert_eq!(artifact.document.description, "One line.");
+        assert_eq!(artifact.navigation.root, "docs");
+        assert_eq!(artifact.navigation.product, "codexa");
         assert_eq!(artifact.target.data_source, "documents");
     }
 }

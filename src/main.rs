@@ -375,9 +375,12 @@ Run an explicit repair/recreate command before applying artifacts.",
             println!("  {} → Notion page", artifact.document.id);
             println!("  Title: {}", artifact.document.title);
             println!("  Description: {}", artifact.document.description);
+            println!("  Root: {}", artifact.navigation.root);
+            println!("  Product: {}", artifact.navigation.product);
             println!("  Kind: {}", artifact.document.kind);
             println!("  Tags: {}", artifact.document.tags.join(", "));
             println!("  Status: {}", artifact.document.status);
+            println!("  Visibility: {}", artifact.document.visibility);
             println!();
             continue;
         }
@@ -386,9 +389,12 @@ Run an explicit repair/recreate command before applying artifacts.",
             &loaded_registry.registry.notion.data_sources.documents.id,
             &artifact.document.title,
             &artifact.document.description,
+            &artifact.navigation.root,
+            &artifact.navigation.product,
             &artifact.document.kind,
             &artifact.document.tags,
             &artifact.document.status,
+            &artifact.document.visibility,
             &artifact.content.markdown,
         )?;
 
