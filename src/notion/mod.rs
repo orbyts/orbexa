@@ -552,7 +552,10 @@ impl Page {
         let properties = self.properties.as_object()?;
 
         for property in properties.values() {
-            let title_items = property.get("title")?.as_array()?;
+            let Some(title_items) = property.get("title").and_then(|value| value.as_array()) else {
+                continue;
+            };
+
             let mut title = String::new();
 
             for item in title_items {
@@ -784,6 +787,50 @@ mod tests {
 
         let page: Page = serde_json::from_str(json).expect("page should parse");
         assert_eq!(page.title().as_deref(), Some("Codexa Test"));
+    }
+
+    #[test]
+    fn extracts_page_title_when_non_title_properties_come_first() {
+        let json = r#"
+{
+  "object": "page",
+  "id": "399a1865-b187-81e1-989a-cd03ee23b483",
+  "url": "https://app.notion.com/p/Lureva-Lightroom-Handoff-Manual",
+  "properties": {
+    "Description": {
+      "id": "description",
+      "type": "rich_text",
+      "rich_text": [
+        {
+          "plain_text": "Daily Lightroom Classic handoff workflow."
+        }
+      ]
+    },
+    "Root": {
+      "id": "root",
+      "type": "select",
+      "select": {
+        "name": "knowledge"
+      }
+    },
+    "Name": {
+      "id": "title",
+      "type": "title",
+      "title": [
+        {
+          "plain_text": "Lureva Lightroom Handoff Manual"
+        }
+      ]
+    }
+  }
+}
+"#;
+
+        let page: Page = serde_json::from_str(json).expect("page should parse");
+        assert_eq!(
+            page.title().as_deref(),
+            Some("Lureva Lightroom Handoff Manual")
+        );
     }
 
     #[test]
