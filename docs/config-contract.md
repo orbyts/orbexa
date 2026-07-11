@@ -240,3 +240,11 @@ Rules:
 5. Require explicit create mode for bootstrap creation.
 6. Require explicit adoption for existing Notion objects not found in Orbexa state.
 7. Never delete Notion pages by default.
+
+## Managed document identity and ordering
+
+Orbexa-managed document data sources contain a stable `Document ID` rich-text property and a numeric `Sort Order` property. `Document ID` is populated from the Codexa document ID. `Sort Order` is populated from `navigation.order`.
+
+`orbexa init` verifies the managed schema on every configured root. Missing managed properties are added idempotently. A managed property with an incompatible type is reported as schema drift and is not replaced automatically.
+
+During apply, Orbexa first trusts a valid lock entry. If the lock is absent, stale, or points to a missing page, Orbexa searches the target data source by exact `Document ID`. One live match is adopted and written back to the lock; multiple live matches stop the apply with a duplicate-identity error; no match creates a page.
