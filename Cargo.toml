@@ -1,6 +1,6 @@
 [package]
 name = "orbexa"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2024"
 rust-version = "1.85"
 description = "Rust CLI for applying Codexa-generated Notion artifacts to managed Notion data sources and pages."
