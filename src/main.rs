@@ -4,10 +4,13 @@ use orbexa::{
     artifact::{NotionPageArtifact, load_manifest, load_page_artifact},
     config::{LoadedConfig, RootConfig, load_config, resolve_config_path, resolve_state_dir},
     lock::{clear_root, load_lock, locked_page, resolve_lock_path, upsert_locked_page, write_lock},
-    notion::{CreateDocumentPage, NotionClient},
+    notion::{CreateDocumentPage, NotionClient, UpdateDocumentPage},
     registry::{
         RegistryRoot, WorkspaceRegistry, load_registry, registry_from_workspace_page,
         resolve_registry_path, upsert_root, write_registry,
+    },
+    render::{
+        NotionIdentity, render_notion_markdown, rendered_content_hash, validate_link_targets,
     },
     state::{State, write_state},
 };
@@ -248,82 +251,240 @@ fn apply(input_dir: PathBuf, dry_run: bool) -> Result<(), Box<dyn std::error::Er
         roots.insert(key.clone(), root.clone());
     }
 
+    let mut artifacts = Vec::new();
+    for entry in &manifest.manifest.pages {
+        let artifact = load_page_artifact(&input_dir, &entry.path)?.artifact;
+        validate_artifact_target(&artifact, &loaded_registry.registry)?;
+        if !roots.contains_key(&artifact.target.root) {
+            return Err(format!(
+                "artifact `{}` targets uninitialized root `{}`",
+                artifact.document.id, artifact.target.root
+            )
+            .into());
+        }
+        artifacts.push(artifact);
+    }
+    validate_link_targets(&artifacts)?;
+
     println!(
         "Orbexa apply\n\nInput:\n  {}\nManifest:\n  {}",
         input_dir.display(),
         manifest.path.display()
     );
-    for entry in &manifest.manifest.pages {
-        let artifact = load_page_artifact(&input_dir, &entry.path)?.artifact;
-        validate_artifact_target(&artifact, &loaded_registry.registry)?;
-        let root = roots.get(&artifact.target.root).ok_or_else(|| {
-            format!(
-                "artifact `{}` targets uninitialized root `{}`",
-                artifact.document.id, artifact.target.root
-            )
-        })?;
 
-        if let Some(existing) = locked_page(&lock, &artifact.document.id) {
+    if dry_run {
+        return apply_dry_run(&client, &artifacts, &roots, &lock);
+    }
+
+    let mut identities = BTreeMap::new();
+
+    // Pass 1: establish every Notion page identity before rendering links.
+    for artifact in &artifacts {
+        let root = &roots[&artifact.target.root];
+        let appearance = &loaded.config.workspace.roots[&artifact.target.root].appearance;
+
+        let (page, identity_changed) = if let Some(existing) =
+            locked_page(&lock, &artifact.document.id).cloned()
+        {
             if existing.root != artifact.target.root {
-                return Err(format!("document `{}` moved from root `{}` to `{}`; explicit move support is not implemented yet", artifact.document.id, existing.root, artifact.target.root).into());
+                return Err(format!(
+                    "document `{}` moved from root `{}` to `{}`; explicit move support is not implemented yet",
+                    artifact.document.id, existing.root, artifact.target.root
+                )
+                .into());
             }
             let page = client.retrieve_page(&existing.notion_page_id)?;
             if page.in_trash {
-                return Err(
-                    format!("locked page `{}` is in trash", existing.notion_page_id).into(),
-                );
+                if loaded.config.sync.on_missing != "recreate" {
+                    return Err(format!(
+                        "locked page `{}` is in trash and sync.on_missing is `{}`",
+                        existing.notion_page_id, loaded.config.sync.on_missing
+                    )
+                    .into());
+                }
+                (
+                    create_placeholder_page(&client, artifact, root, appearance)?,
+                    true,
+                )
+            } else {
+                (page, false)
             }
-            if existing.source_content_hash == artifact.source.content_hash {
-                println!(
-                    "Skip:\n  {} already synced to {}\n  Notion title: {}",
-                    artifact.document.id,
-                    existing.notion_page_id,
-                    page.title().unwrap_or_else(|| "<untitled>".into())
-                );
-                continue;
-            }
-            return Err(format!("document `{}` changed; content update is the next Orbexa slice and no duplicate page was created", artifact.document.id).into());
-        }
+        } else {
+            (
+                create_placeholder_page(&client, artifact, root, appearance)?,
+                true,
+            )
+        };
 
-        if dry_run {
+        let page_url = page
+            .url
+            .clone()
+            .ok_or_else(|| format!("Notion page `{}` has no URL", page.id))?;
+        identities.insert(
+            artifact.document.id.clone(),
+            NotionIdentity {
+                page_id: page.id.clone(),
+                page_url: page_url.clone(),
+                title: artifact.document.title.clone(),
+            },
+        );
+
+        if identity_changed {
+            upsert_locked_page(&mut lock, artifact, page.id, Some(page_url), "");
+        }
+    }
+
+    // Pass 2: resolve all logical links and update only changed pages.
+    for artifact in &artifacts {
+        let identity = &identities[&artifact.document.id];
+        let rendered = render_notion_markdown(artifact, &identities)?;
+        let rendered_hash = rendered_content_hash(artifact, &rendered);
+        let existing = locked_page(&lock, &artifact.document.id)
+            .cloned()
+            .ok_or("page identity disappeared during apply")?;
+
+        if existing.source_content_hash == artifact.source.content_hash
+            && existing.rendered_content_hash == rendered_hash
+        {
             println!(
-                "Would create:\n  {} → {}\n  Root: {}\n  Product: {}",
-                artifact.document.id,
-                root.database_name,
-                artifact.target.root,
-                artifact.navigation.product
+                "Skip:\n  {} already synced to {}",
+                artifact.document.id, identity.page_id
             );
             continue;
         }
-        let appearance = &loaded.config.workspace.roots[&artifact.target.root].appearance;
 
-        let page = client.create_document_page(&CreateDocumentPage {
-            data_source_id: &root.data_source_id,
-            title: &artifact.document.title,
-            description: &artifact.document.description,
-            root: &artifact.navigation.root,
-            product: &artifact.navigation.product,
-            kind: &artifact.document.kind,
-            tags: &artifact.document.tags,
-            status: &artifact.document.status,
-            visibility: &artifact.document.visibility,
-            markdown: &artifact.content.markdown,
-            icon: &appearance.icon,
-            cover: &appearance.cover,
-        })?;
+        let appearance = &loaded.config.workspace.roots[&artifact.target.root].appearance;
+        client.update_document_page(
+            &identity.page_id,
+            &UpdateDocumentPage {
+                title: &artifact.document.title,
+                description: &artifact.document.description,
+                root: &artifact.navigation.root,
+                product: &artifact.navigation.product,
+                kind: &artifact.document.kind,
+                tags: &artifact.document.tags,
+                status: &artifact.document.status,
+                visibility: &artifact.document.visibility,
+                icon: &appearance.icon,
+                cover: &appearance.cover,
+            },
+        )?;
+        client.replace_page_markdown(&identity.page_id, &rendered)?;
+
         upsert_locked_page(
             &mut lock,
-            &artifact,
-            page.id.clone(),
-            page.url.clone(),
-            artifact.source.content_hash.clone(),
+            artifact,
+            identity.page_id.clone(),
+            Some(identity.page_url.clone()),
+            rendered_hash,
         );
-        println!("Created:\n  {} {}", artifact.document.id, page.id);
+        println!("Updated:\n  {} {}", artifact.document.id, identity.page_id);
     }
-    if !dry_run {
-        write_lock(&lock_path, &lock)?;
+
+    write_lock(&lock_path, &lock)?;
+    Ok(())
+}
+
+fn apply_dry_run(
+    client: &NotionClient,
+    artifacts: &[NotionPageArtifact],
+    roots: &BTreeMap<String, RegistryRoot>,
+    lock: &orbexa::lock::LockFile,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut identities = BTreeMap::new();
+    let mut missing = std::collections::BTreeSet::new();
+
+    for artifact in artifacts {
+        if let Some(existing) = locked_page(lock, &artifact.document.id) {
+            let page = client.retrieve_page(&existing.notion_page_id)?;
+            if !page.in_trash {
+                if let Some(url) = page.url {
+                    identities.insert(
+                        artifact.document.id.clone(),
+                        NotionIdentity {
+                            page_id: page.id,
+                            page_url: url,
+                            title: artifact.document.title.clone(),
+                        },
+                    );
+                    continue;
+                }
+            }
+        }
+        missing.insert(artifact.document.id.clone());
+        let root = &roots[&artifact.target.root];
+        println!(
+            "Would create:\n  {} → {}\n  Root: {}\n  Product: {}",
+            artifact.document.id,
+            root.database_name,
+            artifact.target.root,
+            artifact.navigation.product
+        );
+    }
+
+    for artifact in artifacts {
+        if missing.contains(&artifact.document.id) {
+            println!(
+                "Would render after identity creation:\n  {}",
+                artifact.document.id
+            );
+            continue;
+        }
+        if artifact
+            .links
+            .iter()
+            .any(|link| !identities.contains_key(&link.target_id))
+        {
+            println!(
+                "Would refresh links after identity creation:\n  {}",
+                artifact.document.id
+            );
+            continue;
+        }
+
+        let rendered = render_notion_markdown(artifact, &identities)?;
+        let rendered_hash = rendered_content_hash(artifact, &rendered);
+        let existing =
+            locked_page(lock, &artifact.document.id).ok_or("dry-run identity has no lock entry")?;
+        if existing.source_content_hash == artifact.source.content_hash
+            && existing.rendered_content_hash == rendered_hash
+        {
+            println!(
+                "Skip:\n  {} already synced to {}",
+                artifact.document.id, existing.notion_page_id
+            );
+        } else {
+            println!(
+                "Would update:\n  {} {}",
+                artifact.document.id, existing.notion_page_id
+            );
+        }
     }
     Ok(())
+}
+
+fn create_placeholder_page(
+    client: &NotionClient,
+    artifact: &NotionPageArtifact,
+    root: &RegistryRoot,
+    appearance: &orbexa::config::WorkspaceAppearance,
+) -> Result<orbexa::notion::Page, Box<dyn std::error::Error>> {
+    let page = client.create_document_page(&CreateDocumentPage {
+        data_source_id: &root.data_source_id,
+        title: &artifact.document.title,
+        description: &artifact.document.description,
+        root: &artifact.navigation.root,
+        product: &artifact.navigation.product,
+        kind: &artifact.document.kind,
+        tags: &artifact.document.tags,
+        status: &artifact.document.status,
+        visibility: &artifact.document.visibility,
+        markdown: "_Orbexa is preparing this page._",
+        icon: &appearance.icon,
+        cover: &appearance.cover,
+    })?;
+    println!("Created identity:\n  {} {}", artifact.document.id, page.id);
+    Ok(page)
 }
 
 fn create_root(

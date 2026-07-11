@@ -9,6 +9,7 @@ pub mod lock;
 pub mod notion;
 pub mod plan;
 pub mod registry;
+pub mod render;
 pub mod state;
 
 /// Current Orbexa package version.

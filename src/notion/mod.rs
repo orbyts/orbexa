@@ -199,6 +199,103 @@ impl NotionClient {
         Ok(page)
     }
 
+    /// Updates the managed properties, icon, and cover of a document page.
+    pub fn update_document_page(
+        &self,
+        page_id: &str,
+        document: &UpdateDocumentPage<'_>,
+    ) -> Result<Page, NotionError> {
+        let request = UpdateDocumentPageRequest {
+            properties: DocumentPageProperties {
+                name: TitlePropertyValue {
+                    title: vec![RichText {
+                        text: TextContent {
+                            content: document.title,
+                        },
+                    }],
+                },
+                description: RichTextPropertyValue {
+                    rich_text: vec![RichText {
+                        text: TextContent {
+                            content: document.description,
+                        },
+                    }],
+                },
+                root: SelectPropertyValue {
+                    select: SelectOption {
+                        name: document.root,
+                    },
+                },
+                product: SelectPropertyValue {
+                    select: SelectOption {
+                        name: document.product,
+                    },
+                },
+                kind: SelectPropertyValue {
+                    select: SelectOption {
+                        name: document.kind,
+                    },
+                },
+                tags: MultiSelectPropertyValue {
+                    multi_select: document
+                        .tags
+                        .iter()
+                        .map(|tag| SelectOption { name: tag.as_str() })
+                        .collect(),
+                },
+                status: SelectPropertyValue {
+                    select: SelectOption {
+                        name: document.status,
+                    },
+                },
+                visibility: SelectPropertyValue {
+                    select: SelectOption {
+                        name: document.visibility,
+                    },
+                },
+            },
+            icon: PageIcon::from(document.icon),
+            cover: PageCover::from(document.cover),
+        };
+
+        let response = self
+            .http
+            .patch(format!("https://api.notion.com/v1/pages/{page_id}"))
+            .bearer_auth(&self.token)
+            .header("Notion-Version", &self.api_version)
+            .json(&request)
+            .send()?;
+
+        parse_response(response)
+    }
+
+    /// Replaces all page body content using Notion-flavored Markdown.
+    pub fn replace_page_markdown(
+        &self,
+        page_id: &str,
+        markdown: &str,
+    ) -> Result<PageMarkdown, NotionError> {
+        let request = ReplacePageMarkdownRequest {
+            request_type: "replace_content",
+            replace_content: ReplaceContent {
+                new_str: markdown,
+                allow_deleting_content: false,
+            },
+        };
+
+        let response = self
+            .http
+            .patch(format!(
+                "https://api.notion.com/v1/pages/{page_id}/markdown"
+            ))
+            .bearer_auth(&self.token)
+            .header("Notion-Version", &self.api_version)
+            .json(&request)
+            .send()?;
+
+        parse_response(response)
+    }
+
     /// Creates a database under an existing page with an initial data source.
     pub fn create_database(
         &self,
@@ -299,6 +396,20 @@ impl NotionClient {
     }
 }
 
+/// Parameters for updating a managed Notion document page.
+pub struct UpdateDocumentPage<'a> {
+    pub title: &'a str,
+    pub description: &'a str,
+    pub root: &'a str,
+    pub product: &'a str,
+    pub kind: &'a str,
+    pub tags: &'a [String],
+    pub status: &'a str,
+    pub visibility: &'a str,
+    pub icon: &'a WorkspaceIcon,
+    pub cover: &'a WorkspaceCover,
+}
+
 /// Parameters for creating a managed Notion document page.
 pub struct CreateDocumentPage<'a> {
     pub data_source_id: &'a str,
@@ -313,6 +424,40 @@ pub struct CreateDocumentPage<'a> {
     pub markdown: &'a str,
     pub icon: &'a WorkspaceIcon,
     pub cover: &'a WorkspaceCover,
+}
+
+fn parse_response<T: for<'de> Deserialize<'de>>(
+    response: reqwest::blocking::Response,
+) -> Result<T, NotionError> {
+    let status = response.status();
+    let text = response.text()?;
+    if !status.is_success() {
+        return Err(NotionError::Api {
+            status: status.as_u16(),
+            body: text,
+        });
+    }
+    Ok(serde_json::from_str(&text)?)
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateDocumentPageRequest<'a> {
+    properties: DocumentPageProperties<'a>,
+    icon: PageIcon<'a>,
+    cover: PageCover<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReplacePageMarkdownRequest<'a> {
+    #[serde(rename = "type")]
+    request_type: &'a str,
+    replace_content: ReplaceContent<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReplaceContent<'a> {
+    new_str: &'a str,
+    allow_deleting_content: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -537,6 +682,15 @@ impl Database {
     pub fn data_source_named(&self, name: &str) -> Option<&DatabaseDataSource> {
         self.data_sources.iter().find(|source| source.name == name)
     }
+}
+
+/// Page content returned by Notion's Markdown content endpoint.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct PageMarkdown {
+    pub id: String,
+    pub markdown: String,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// Minimal page response shape.
