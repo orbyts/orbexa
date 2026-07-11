@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 
 use sha2::{Digest, Sha256};
 
-use crate::artifact::NotionPageArtifact;
+use crate::{
+    artifact::NotionPageArtifact,
+    config::{WorkspaceAppearance, WorkspaceCover, WorkspaceIcon},
+};
 
 /// Stable Notion identity for a Codexa document.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,8 +38,14 @@ pub fn render_notion_markdown(
 
 /// Computes the lock hash for the final rendered page state.
 #[must_use]
-pub fn rendered_content_hash(artifact: &NotionPageArtifact, markdown: &str) -> String {
+pub fn rendered_content_hash(
+    artifact: &NotionPageArtifact,
+    markdown: &str,
+    appearance: &WorkspaceAppearance,
+) -> String {
     let mut hasher = Sha256::new();
+    hasher.update(artifact.document.id.as_bytes());
+    hasher.update([0]);
     hasher.update(artifact.document.title.as_bytes());
     hasher.update([0]);
     hasher.update(artifact.document.description.as_bytes());
@@ -44,6 +53,10 @@ pub fn rendered_content_hash(artifact: &NotionPageArtifact, markdown: &str) -> S
     hasher.update(artifact.navigation.root.as_bytes());
     hasher.update([0]);
     hasher.update(artifact.navigation.product.as_bytes());
+    hasher.update([0]);
+    hasher.update(artifact.navigation.section.as_bytes());
+    hasher.update([0]);
+    hasher.update(artifact.navigation.order.to_le_bytes());
     hasher.update([0]);
     hasher.update(artifact.document.kind.as_bytes());
     hasher.update([0]);
@@ -56,7 +69,43 @@ pub fn rendered_content_hash(artifact: &NotionPageArtifact, markdown: &str) -> S
         hasher.update([0]);
     }
     hasher.update(markdown.as_bytes());
+    hasher.update([0]);
+    hash_icon(&mut hasher, &appearance.icon);
+    hasher.update([0]);
+    hash_cover(&mut hasher, &appearance.cover);
     format!("sha256:{:x}", hasher.finalize())
+}
+
+fn hash_icon(hasher: &mut Sha256, icon: &WorkspaceIcon) {
+    match icon {
+        WorkspaceIcon::Emoji { emoji } => {
+            hasher.update(b"emoji");
+            hasher.update([0]);
+            hasher.update(emoji.as_bytes());
+        }
+        WorkspaceIcon::Icon { name, color } => {
+            hasher.update(b"icon");
+            hasher.update([0]);
+            hasher.update(name.as_bytes());
+            hasher.update([0]);
+            hasher.update(color.as_bytes());
+        }
+        WorkspaceIcon::External { url } => {
+            hasher.update(b"external");
+            hasher.update([0]);
+            hasher.update(url.as_bytes());
+        }
+    }
+}
+
+fn hash_cover(hasher: &mut Sha256, cover: &WorkspaceCover) {
+    match cover {
+        WorkspaceCover::External { url } => {
+            hasher.update(b"external");
+            hasher.update([0]);
+            hasher.update(url.as_bytes());
+        }
+    }
 }
 
 /// Validates that every logical link resolves inside the loaded artifact set.
@@ -103,6 +152,18 @@ mod tests {
         ArtifactContent, ArtifactDocument, ArtifactLink, ArtifactNavigation, ArtifactSource,
         ArtifactTarget, NotionPageArtifact,
     };
+
+    fn appearance() -> WorkspaceAppearance {
+        WorkspaceAppearance {
+            icon: WorkspaceIcon::Icon {
+                name: "book".into(),
+                color: "lightgray".into(),
+            },
+            cover: WorkspaceCover::External {
+                url: "https://example.test/cover.jpg".into(),
+            },
+        }
+    }
 
     fn artifact(markdown: &str, links: Vec<ArtifactLink>) -> NotionPageArtifact {
         NotionPageArtifact {
@@ -193,8 +254,58 @@ mod tests {
     fn rendered_hash_changes_with_resolved_content() {
         let artifact = artifact("Body", vec![]);
         assert_ne!(
-            rendered_content_hash(&artifact, "Body"),
-            rendered_content_hash(&artifact, "Changed")
+            rendered_content_hash(&artifact, "Body", &appearance()),
+            rendered_content_hash(&artifact, "Changed", &appearance())
+        );
+    }
+
+    #[test]
+    fn rendered_hash_changes_with_managed_metadata() {
+        let artifact = artifact("Body", vec![]);
+
+        let mut changed_order = artifact.clone();
+        changed_order.navigation.order = 150;
+        assert_ne!(
+            rendered_content_hash(&artifact, "Body", &appearance()),
+            rendered_content_hash(&changed_order, "Body", &appearance())
+        );
+
+        let mut changed_section = artifact.clone();
+        changed_section.navigation.section = "Reference".into();
+        assert_ne!(
+            rendered_content_hash(&artifact, "Body", &appearance()),
+            rendered_content_hash(&changed_section, "Body", &appearance())
+        );
+
+        let mut changed_id = artifact.clone();
+        changed_id.document.id = "codexa.guides.renamed".into();
+        assert_ne!(
+            rendered_content_hash(&artifact, "Body", &appearance()),
+            rendered_content_hash(&changed_id, "Body", &appearance())
+        );
+    }
+    #[test]
+    fn rendered_hash_changes_with_managed_appearance() {
+        let artifact = artifact("Body", vec![]);
+        let original = appearance();
+
+        let mut changed_icon = original.clone();
+        changed_icon.icon = WorkspaceIcon::Icon {
+            name: "library".into(),
+            color: "lightgray".into(),
+        };
+        assert_ne!(
+            rendered_content_hash(&artifact, "Body", &original),
+            rendered_content_hash(&artifact, "Body", &changed_icon)
+        );
+
+        let mut changed_cover = original.clone();
+        changed_cover.cover = WorkspaceCover::External {
+            url: "https://example.test/other-cover.jpg".into(),
+        };
+        assert_ne!(
+            rendered_content_hash(&artifact, "Body", &original),
+            rendered_content_hash(&artifact, "Body", &changed_cover)
         );
     }
 }

@@ -125,6 +125,16 @@ impl NotionClient {
                 data_source_id: document.data_source_id,
             },
             properties: DocumentPageProperties {
+                document_id: RichTextPropertyValue {
+                    rich_text: vec![RichText {
+                        text: TextContent {
+                            content: document.document_id,
+                        },
+                    }],
+                },
+                sort_order: NumberPropertyValue {
+                    number: document.sort_order,
+                },
                 name: TitlePropertyValue {
                     title: vec![RichText {
                         text: TextContent {
@@ -147,6 +157,11 @@ impl NotionClient {
                 product: SelectPropertyValue {
                     select: SelectOption {
                         name: document.product,
+                    },
+                },
+                section: SelectPropertyValue {
+                    select: SelectOption {
+                        name: document.section,
                     },
                 },
                 kind: SelectPropertyValue {
@@ -207,6 +222,16 @@ impl NotionClient {
     ) -> Result<Page, NotionError> {
         let request = UpdateDocumentPageRequest {
             properties: DocumentPageProperties {
+                document_id: RichTextPropertyValue {
+                    rich_text: vec![RichText {
+                        text: TextContent {
+                            content: document.document_id,
+                        },
+                    }],
+                },
+                sort_order: NumberPropertyValue {
+                    number: document.sort_order,
+                },
                 name: TitlePropertyValue {
                     title: vec![RichText {
                         text: TextContent {
@@ -229,6 +254,11 @@ impl NotionClient {
                 product: SelectPropertyValue {
                     select: SelectOption {
                         name: document.product,
+                    },
+                },
+                section: SelectPropertyValue {
+                    select: SelectOption {
+                        name: document.section,
                     },
                 },
                 kind: SelectPropertyValue {
@@ -349,6 +379,95 @@ impl NotionClient {
         Ok(database)
     }
 
+    /// Retrieves a Notion data source by ID.
+    pub fn retrieve_data_source(&self, data_source_id: &str) -> Result<DataSource, NotionError> {
+        let response = self
+            .http
+            .get(format!(
+                "https://api.notion.com/v1/data_sources/{data_source_id}"
+            ))
+            .bearer_auth(&self.token)
+            .header("Notion-Version", &self.api_version)
+            .send()?;
+
+        parse_response(response)
+    }
+
+    /// Adds any missing managed properties and rejects incompatible property types.
+    pub fn ensure_document_schema(&self, data_source_id: &str) -> Result<Vec<String>, NotionError> {
+        let data_source = self.retrieve_data_source(data_source_id)?;
+        let expected = managed_property_types();
+        let mut missing = std::collections::BTreeMap::new();
+        let mut added = Vec::new();
+
+        for (name, expected_type) in expected.iter().copied() {
+            match data_source.properties.get(name) {
+                Some(property) if property.property_type == expected_type => {}
+                Some(property) => {
+                    return Err(NotionError::SchemaDrift {
+                        property: name.to_owned(),
+                        expected: expected_type.to_owned(),
+                        actual: property.property_type.clone(),
+                    });
+                }
+                None => {
+                    missing.insert(name.to_owned(), property_schema(expected_type));
+                    added.push(name.to_owned());
+                }
+            }
+        }
+
+        if missing.is_empty() {
+            return Ok(added);
+        }
+
+        let response = self
+            .http
+            .patch(format!(
+                "https://api.notion.com/v1/data_sources/{data_source_id}"
+            ))
+            .bearer_auth(&self.token)
+            .header("Notion-Version", &self.api_version)
+            .json(&UpdateDataSourceRequest {
+                properties: missing,
+            })
+            .send()?;
+        let _: DataSource = parse_response(response)?;
+        Ok(added)
+    }
+
+    /// Finds all live pages whose Document ID exactly matches the supplied value.
+    pub fn query_pages_by_document_id(
+        &self,
+        data_source_id: &str,
+        document_id: &str,
+    ) -> Result<Vec<Page>, NotionError> {
+        let request = QueryDataSourceRequest {
+            filter: QueryFilter {
+                property: "Document ID",
+                rich_text: RichTextEquals {
+                    equals: document_id,
+                },
+            },
+            page_size: 100,
+        };
+        let response = self
+            .http
+            .post(format!(
+                "https://api.notion.com/v1/data_sources/{data_source_id}/query"
+            ))
+            .bearer_auth(&self.token)
+            .header("Notion-Version", &self.api_version)
+            .json(&request)
+            .send()?;
+        let result: QueryDataSourceResponse = parse_response(response)?;
+        Ok(result
+            .results
+            .into_iter()
+            .filter(|page| !page.in_trash)
+            .collect())
+    }
+
     /// Retrieves all first-level block children for a block or page.
     pub fn retrieve_block_children(&self, block_id: &str) -> Result<Vec<Block>, NotionError> {
         let mut blocks = Vec::new();
@@ -398,10 +517,13 @@ impl NotionClient {
 
 /// Parameters for updating a managed Notion document page.
 pub struct UpdateDocumentPage<'a> {
+    pub document_id: &'a str,
+    pub sort_order: i64,
     pub title: &'a str,
     pub description: &'a str,
     pub root: &'a str,
     pub product: &'a str,
+    pub section: &'a str,
     pub kind: &'a str,
     pub tags: &'a [String],
     pub status: &'a str,
@@ -413,10 +535,13 @@ pub struct UpdateDocumentPage<'a> {
 /// Parameters for creating a managed Notion document page.
 pub struct CreateDocumentPage<'a> {
     pub data_source_id: &'a str,
+    pub document_id: &'a str,
+    pub sort_order: i64,
     pub title: &'a str,
     pub description: &'a str,
     pub root: &'a str,
     pub product: &'a str,
+    pub section: &'a str,
     pub kind: &'a str,
     pub tags: &'a [String],
     pub status: &'a str,
@@ -476,6 +601,10 @@ struct DataSourceParent<'a> {
 
 #[derive(Debug, Serialize)]
 struct DocumentPageProperties<'a> {
+    #[serde(rename = "Document ID")]
+    document_id: RichTextPropertyValue<'a>,
+    #[serde(rename = "Sort Order")]
+    sort_order: NumberPropertyValue,
     #[serde(rename = "Name")]
     name: TitlePropertyValue<'a>,
     #[serde(rename = "Description")]
@@ -484,6 +613,8 @@ struct DocumentPageProperties<'a> {
     root: SelectPropertyValue<'a>,
     #[serde(rename = "Product")]
     product: SelectPropertyValue<'a>,
+    #[serde(rename = "Section")]
+    section: SelectPropertyValue<'a>,
     #[serde(rename = "Kind")]
     kind: SelectPropertyValue<'a>,
     #[serde(rename = "Tags")]
@@ -502,6 +633,11 @@ struct TitlePropertyValue<'a> {
 #[derive(Debug, Serialize)]
 struct RichTextPropertyValue<'a> {
     rich_text: Vec<RichText<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct NumberPropertyValue {
+    number: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -536,6 +672,10 @@ struct InitialDataSource<'a> {
 
 #[derive(Debug, Default, Serialize)]
 struct DocumentProperties {
+    #[serde(rename = "Document ID")]
+    document_id: RichTextPropertySchema,
+    #[serde(rename = "Sort Order")]
+    sort_order: NumberPropertySchema,
     #[serde(rename = "Name")]
     name: TitlePropertySchema,
     #[serde(rename = "Description")]
@@ -544,6 +684,8 @@ struct DocumentProperties {
     root: SelectPropertySchema,
     #[serde(rename = "Product")]
     product: SelectPropertySchema,
+    #[serde(rename = "Section")]
+    section: SelectPropertySchema,
     #[serde(rename = "Kind")]
     kind: SelectPropertySchema,
     #[serde(rename = "Tags")]
@@ -562,6 +704,11 @@ struct TitlePropertySchema {
 #[derive(Debug, Default, Serialize)]
 struct RichTextPropertySchema {
     rich_text: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct NumberPropertySchema {
+    number: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -656,6 +803,91 @@ impl<'a> From<&'a WorkspaceCover> for PageCover<'a> {
 #[derive(Debug, Serialize)]
 struct ExternalFile<'a> {
     url: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct DataSource {
+    pub object: String,
+    pub id: String,
+    #[serde(default)]
+    pub in_trash: bool,
+    #[serde(default)]
+    pub properties: std::collections::BTreeMap<String, DataSourceProperty>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DataSourceProperty {
+    #[serde(rename = "type")]
+    pub property_type: String,
+}
+
+impl DataSource {
+    pub fn missing_managed_properties(&self) -> Result<Vec<String>, NotionError> {
+        let mut missing = Vec::new();
+        for (name, expected_type) in managed_property_types().iter().copied() {
+            match self.properties.get(name) {
+                Some(property) if property.property_type == expected_type => {}
+                Some(property) => {
+                    return Err(NotionError::SchemaDrift {
+                        property: name.to_owned(),
+                        expected: expected_type.to_owned(),
+                        actual: property.property_type.clone(),
+                    });
+                }
+                None => missing.push(name.to_owned()),
+            }
+        }
+        Ok(missing)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateDataSourceRequest {
+    properties: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct QueryDataSourceRequest<'a> {
+    filter: QueryFilter<'a>,
+    page_size: u16,
+}
+
+#[derive(Debug, Serialize)]
+struct QueryFilter<'a> {
+    property: &'a str,
+    rich_text: RichTextEquals<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct RichTextEquals<'a> {
+    equals: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueryDataSourceResponse {
+    results: Vec<Page>,
+}
+
+fn managed_property_types() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("Name", "title"),
+        ("Document ID", "rich_text"),
+        ("Sort Order", "number"),
+        ("Description", "rich_text"),
+        ("Root", "select"),
+        ("Product", "select"),
+        ("Section", "select"),
+        ("Kind", "select"),
+        ("Tags", "multi_select"),
+        ("Status", "select"),
+        ("Visibility", "select"),
+    ]
+}
+
+fn property_schema(property_type: &str) -> serde_json::Value {
+    let mut schema = serde_json::Map::new();
+    schema.insert(property_type.to_owned(), serde_json::json!({}));
+    serde_json::Value::Object(schema)
 }
 
 /// Minimal database response shape.
@@ -782,7 +1014,15 @@ impl Block {
 pub enum NotionError {
     Http(reqwest::Error),
     Json(serde_json::Error),
-    Api { status: u16, body: String },
+    Api {
+        status: u16,
+        body: String,
+    },
+    SchemaDrift {
+        property: String,
+        expected: String,
+        actual: String,
+    },
 }
 
 impl std::fmt::Display for NotionError {
@@ -793,7 +1033,22 @@ impl std::fmt::Display for NotionError {
             Self::Api { status, body } => {
                 write!(formatter, "Notion API error {status}: {body}")
             }
+            Self::SchemaDrift {
+                property,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "Notion schema drift for `{property}`: expected `{expected}`, found `{actual}`"
+            ),
         }
+    }
+}
+
+impl NotionError {
+    #[must_use]
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, Self::Api { status: 404, .. })
     }
 }
 
@@ -825,6 +1080,14 @@ mod tests {
                 data_source_id: "data-source-id",
             },
             properties: DocumentPageProperties {
+                document_id: RichTextPropertyValue {
+                    rich_text: vec![RichText {
+                        text: TextContent {
+                            content: "lureva.playbooks.handoff",
+                        },
+                    }],
+                },
+                sort_order: NumberPropertyValue { number: 100 },
                 name: TitlePropertyValue {
                     title: vec![RichText {
                         text: TextContent { content: "Title" },
@@ -842,6 +1105,9 @@ mod tests {
                 },
                 product: SelectPropertyValue {
                     select: SelectOption { name: "lureva" },
+                },
+                section: SelectPropertyValue {
+                    select: SelectOption { name: "Playbooks" },
                 },
                 kind: SelectPropertyValue {
                     select: SelectOption { name: "playbook" },
@@ -876,8 +1142,14 @@ mod tests {
             json["properties"]["Description"]["rich_text"][0]["text"]["content"],
             "Description"
         );
+        assert_eq!(
+            json["properties"]["Document ID"]["rich_text"][0]["text"]["content"],
+            "lureva.playbooks.handoff"
+        );
+        assert_eq!(json["properties"]["Sort Order"]["number"], 100);
         assert_eq!(json["properties"]["Root"]["select"]["name"], "knowledge");
         assert_eq!(json["properties"]["Product"]["select"]["name"], "lureva");
+        assert_eq!(json["properties"]["Section"]["select"]["name"], "Playbooks");
         assert_eq!(json["properties"]["Kind"]["select"]["name"], "playbook");
         assert_eq!(
             json["properties"]["Tags"]["multi_select"][0]["name"],

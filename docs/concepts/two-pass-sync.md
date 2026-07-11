@@ -15,7 +15,7 @@ navigation:
   root: docs
   product: orbexa
   section: Concepts
-  order: 30
+  order: 300
 distribution:
   notion: true
   web: public
@@ -62,3 +62,13 @@ into ordinary Markdown links targeting the known Notion page URL. It then comput
 If a linked page is recreated, its Notion URL changes. A source document that did not change may still need an update because its rendered link destination changed. Tracking the rendered-content hash captures this endpoint-level dependency.
 
 Codexa's endpoint-neutral model is described in [[codexa.concepts.navigation-and-links|Navigation and Links]].
+
+## Identity recovery
+
+A local lock is an optimization, not the only source of page identity. When a lock entry is unavailable or stale, Orbexa queries the destination data source for the exact Codexa `Document ID`. This lets a new machine or a repaired configuration adopt the existing Notion page without creating a duplicate.
+
+Orbexa refuses to choose between multiple live pages with the same `Document ID`. Resolve the duplicate in Notion and run apply again.
+
+## Sort order
+
+Orbexa writes `navigation.order` to the Notion `Sort Order` number property on both create and update. Configure database views to sort by `Sort Order` ascending, then `Name` ascending. Values such as `100`, `200`, and `300` leave room for later insertion.

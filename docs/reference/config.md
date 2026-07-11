@@ -14,7 +14,7 @@ navigation:
   root: docs
   product: orbexa
   section: Reference
-  order: 20
+  order: 200
 distribution:
   notion: true
   web: public
