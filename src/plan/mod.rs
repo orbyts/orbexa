@@ -69,42 +69,41 @@ pub fn render_init_plan_with_discovery(
 
         if !discovery.matching_workspace_pages.is_empty() {
             output.push_str("Collision:\n");
+
             for page in &discovery.matching_workspace_pages {
                 output.push_str(&format!(
                     "  Page `{}` already exists under the parent: {}\n",
                     page.title, page.id
                 ));
             }
-            output.push_str("  Orbexa will not adopt or overwrite this page unless it is explicitly recorded in state.\n\n");
+
+            output.push_str(
+                "  Orbexa will not adopt or overwrite this page unless it is explicitly recorded in state.\n\n",
+            );
         }
     }
 
     match config.notion.bootstrap.mode {
         BootstrapMode::Verify => {
             output.push_str("Would verify:\n");
-            output.push_str(&format!("  Page         {}\n", config.workspace.page_name));
-            output.push_str(&format!(
-                "  Database     {}\n",
-                config.workspace.database_name
-            ));
-            output.push_str(&format!(
-                "  Data source  {}\n\n",
-                config.workspace.data_sources.documents.name
-            ));
         }
         BootstrapMode::Create => {
             output.push_str("Would create or verify:\n");
-            output.push_str(&format!("  Page         {}\n", config.workspace.page_name));
-            output.push_str(&format!(
-                "  Database     {}\n",
-                config.workspace.database_name
-            ));
-            output.push_str(&format!(
-                "  Data source  {}\n\n",
-                config.workspace.data_sources.documents.name
-            ));
         }
     }
+
+    output.push_str(&format!(
+        "  Workspace page  {}\n",
+        config.workspace.page_name
+    ));
+
+    for (root_key, root) in &config.workspace.roots {
+        output.push_str(&format!("  Root            {root_key}\n"));
+        output.push_str(&format!("    Database      {}\n", root.database_name));
+        output.push_str(&format!("    Data source   {}\n", root.data_source_name));
+    }
+
+    output.push('\n');
 
     output.push_str("Would write:\n");
     output.push_str(&format!("  {}/state.toml\n", state_dir.display()));
@@ -131,7 +130,7 @@ mod tests {
 
     fn sample_config() -> Config {
         let source = r#"
-schema = "orbexa/config@1"
+schema = "orbexa/config@2"
 
 [notion]
 api_version = "2026-03-11"
@@ -143,28 +142,54 @@ root = "parent_page"
 
 [workspace]
 page_name = "Codexa"
-database_name = "Knowledge"
 
-[workspace.data_sources.documents]
-name = "Documents"
-kind = "documents"
+[workspace.appearance.icon]
+type = "emoji"
+emoji = "🧭"
+
+[workspace.appearance.cover]
+type = "external"
+url = "https://example.com/workspace-cover.jpg"
+
+[workspace.roots.docs]
+database_name = "Docs"
+data_source_name = "Documents"
+
+[workspace.roots.docs.appearance.icon]
+type = "emoji"
+emoji = "📘"
+
+[workspace.roots.docs.appearance.cover]
+type = "external"
+url = "https://example.com/docs-cover.jpg"
+
+[workspace.roots.knowledge]
+database_name = "Knowledge"
+data_source_name = "Documents"
+
+[workspace.roots.knowledge.appearance.icon]
+type = "emoji"
+emoji = "📚"
+
+[workspace.roots.knowledge.appearance.cover]
+type = "external"
+url = "https://example.com/knowledge-cover.jpg"
 
 [artifacts]
 input = "../codexa/dist/notion"
 
 [sync]
-mode = "export"
-managed_by = "orbexa"
-on_missing = "mark_stale"
-on_drift = "warn_and_skip"
+on_missing = "recreate"
+on_drift = "update"
 "#;
 
         toml::from_str(source).expect("config should parse")
     }
 
     #[test]
-    fn renders_create_plan() {
+    fn renders_create_plan_for_all_roots() {
         let config = sample_config();
+
         let plan = render_init_plan(
             &PathBuf::from("/tmp/config.toml"),
             &PathBuf::from("/tmp/state/orbexa"),
@@ -172,14 +197,20 @@ on_drift = "warn_and_skip"
         );
 
         assert!(plan.contains("Orbexa init plan"));
-        assert!(plan.contains("Page         Codexa"));
-        assert!(plan.contains("Database     Knowledge"));
-        assert!(plan.contains("Data source  Documents"));
+        assert!(plan.contains("Workspace page  Codexa"));
+
+        assert!(plan.contains("Root            docs"));
+        assert!(plan.contains("Database      Docs"));
+        assert!(plan.contains("Data source   Documents"));
+
+        assert!(plan.contains("Root            knowledge"));
+        assert!(plan.contains("Database      Knowledge"));
     }
 
     #[test]
     fn renders_collision_when_workspace_page_exists() {
         let config = sample_config();
+
         let discovery = BootstrapDiscovery {
             parent_title: "Codexa Test".into(),
             matching_workspace_pages: vec![DiscoveredObject {

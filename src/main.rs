@@ -1,14 +1,16 @@
-use std::{env, path::PathBuf, process::ExitCode};
+use std::{collections::BTreeMap, env, path::PathBuf, process::ExitCode};
 
 use orbexa::{
-    artifact::{load_manifest, load_page_artifact},
-    config::{LoadedConfig, load_config, resolve_config_path, resolve_state_dir},
-    lock::{load_lock, locked_page, resolve_lock_path, upsert_locked_page, write_lock},
-    notion::{Block, NotionClient, Page},
-    plan::{BootstrapDiscovery, DiscoveredObject, render_init_plan_with_discovery},
+    artifact::{NotionPageArtifact, load_manifest, load_page_artifact},
+    config::{LoadedConfig, RootConfig, load_config, resolve_config_path, resolve_state_dir},
+    lock::{clear_root, load_lock, locked_page, resolve_lock_path, upsert_locked_page, write_lock},
+    notion::{CreateDocumentPage, NotionClient, UpdateDocumentPage},
     registry::{
-        load_registry, registry_from_workspace_page, registry_with_database, resolve_registry_path,
-        write_registry,
+        RegistryRoot, WorkspaceRegistry, load_registry, registry_from_workspace_page,
+        resolve_registry_path, upsert_root, write_registry,
+    },
+    render::{
+        NotionIdentity, render_notion_markdown, rendered_content_hash, validate_link_targets,
     },
     state::{State, write_state},
 };
@@ -38,44 +40,30 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         [command] if command == "check" => check(None),
-        [command, config_flag, config_path] if command == "check" && config_flag == "--config" => {
-            check(Some(PathBuf::from(config_path)))
-        }
-        [command, flag] if command == "init" && flag == "--dry-run" => init(None, true),
-        [command, flag] if command == "init" && flag == "--recreate-database" => {
-            recreate_database(false)
-        }
-        [command, flag, dry_run_flag]
-            if command == "init"
-                && flag == "--recreate-database"
-                && dry_run_flag == "--dry-run" =>
-        {
-            recreate_database(true)
-        }
-        [command, dry_run_flag, flag]
-            if command == "init"
-                && dry_run_flag == "--dry-run"
-                && flag == "--recreate-database" =>
-        {
-            recreate_database(true)
-        }
-        [command, config_flag, config_path, dry_run_flag]
-            if command == "init" && config_flag == "--config" && dry_run_flag == "--dry-run" =>
-        {
-            init(Some(PathBuf::from(config_path)), true)
-        }
-        [command, dry_run_flag, config_flag, config_path]
-            if command == "init" && dry_run_flag == "--dry-run" && config_flag == "--config" =>
-        {
-            init(Some(PathBuf::from(config_path)), true)
-        }
-        [command, config_flag, config_path] if command == "init" && config_flag == "--config" => {
-            init(Some(PathBuf::from(config_path)), false)
+        [command, flag, path] if command == "check" && flag == "--config" => {
+            check(Some(path.into()))
         }
         [command] if command == "init" => init(None, false),
-        [command, input] if command == "apply" => apply(PathBuf::from(input), false),
+        [command, flag] if command == "init" && flag == "--dry-run" => init(None, true),
+        [command, flag, root] if command == "init" && flag == "--recreate-root" => {
+            recreate_root(root, false)
+        }
+        [command, flag, root, dry]
+            if command == "init" && flag == "--recreate-root" && dry == "--dry-run" =>
+        {
+            recreate_root(root, true)
+        }
+        [command, flag, path] if command == "init" && flag == "--config" => {
+            init(Some(path.into()), false)
+        }
+        [command, flag, path, dry]
+            if command == "init" && flag == "--config" && dry == "--dry-run" =>
+        {
+            init(Some(path.into()), true)
+        }
+        [command, input] if command == "apply" => apply(input.into(), false),
         [command, input, flag] if command == "apply" && flag == "--dry-run" => {
-            apply(PathBuf::from(input), true)
+            apply(input.into(), true)
         }
         _ => {
             print_help();
@@ -84,594 +72,514 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn check(explicit_config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
-    let loaded = load_orbexa_config(explicit_config_path)?;
-    let token = notion_token()?;
-
-    let client = NotionClient::new(token, loaded.config.notion.api_version.clone());
+fn check(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_orbexa_config(config_path)?;
+    let client = client(&loaded)?;
     let parent = client.retrieve_page(&loaded.config.notion.parent_page_id)?;
-
-    println!("Orbexa check");
-    println!();
-    println!("Config:");
-    println!("  {}", loaded.path.display());
-    println!();
-    println!("Notion:");
-    println!("  parent page id: {}", parent.id);
+    println!("Orbexa check\n\nConfig:\n  {}", loaded.path.display());
+    println!("\nNotion:\n  parent page id: {}", parent.id);
     println!(
         "  parent title:   {}",
         parent.title().unwrap_or_else(|| "<untitled>".into())
     );
     println!("  api version:    {}", loaded.config.notion.api_version);
-    println!();
-    println!("Workspace target:");
-    println!("  page:        {}", loaded.config.workspace.page_name);
-    println!("  database:    {}", loaded.config.workspace.database_name);
     println!(
-        "  data source: {}",
-        loaded.config.workspace.data_sources.documents.name
+        "\nWorkspace target:\n  page: {}",
+        loaded.config.workspace.page_name
     );
-
+    println!("  roots:");
+    for (key, root) in &loaded.config.workspace.roots {
+        println!(
+            "    {key}: {} / {}",
+            root.database_name, root.data_source_name
+        );
+    }
     Ok(())
 }
 
-fn recreate_database(dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let loaded = load_orbexa_config(None)?;
+fn init(config_path: Option<PathBuf>, dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_orbexa_config(config_path)?;
     let registry_path = resolve_registry_path(&loaded.config)?;
-    let loaded_registry = load_registry(&registry_path)?
-        .ok_or("workspace registry is missing; run `orbexa init` first")?;
+    let client = client(&loaded)?;
 
-    let token = notion_token()?;
-    let client = NotionClient::new(token, loaded.config.notion.api_version.clone());
+    let Some(mut loaded_registry) = load_registry(&registry_path)? else {
+        if dry_run {
+            println!(
+                "Orbexa init plan\n\nWould create workspace page:\n  {}",
+                loaded.config.workspace.page_name
+            );
+            println!("Would write registry:\n  {}", registry_path.display());
+            println!("A following init run would create roots:");
+            for (key, root) in &loaded.config.workspace.roots {
+                println!("  {key}: {}", root.database_name);
+            }
+            return Ok(());
+        }
+        let page = client.create_child_page(
+            &loaded.config.notion.parent_page_id,
+            &loaded.config.workspace.page_name,
+            &loaded.config.workspace.appearance.icon,
+            &loaded.config.workspace.appearance.cover,
+        )?;
+        let registry =
+            registry_from_workspace_page(&loaded.config, page.id.clone(), page.url.clone());
+        let written = write_registry(&registry_path, &registry)?;
+        let state = State::workspace_page(
+            loaded.config.notion.parent_page_id.clone(),
+            page.id.clone(),
+            loaded.config.workspace.page_name.clone(),
+            page.url.clone(),
+        );
+        let state_path = write_state(&resolve_state_dir()?, &state)?;
+        println!(
+            "Orbexa init\n\nCreated workspace page:\n  {} {}",
+            loaded.config.workspace.page_name, page.id
+        );
+        println!(
+            "Wrote:\n  {}\n  {}",
+            written.display(),
+            state_path.display()
+        );
+        println!("\nNext: run `orbexa init` again to create configured roots.");
+        return Ok(());
+    };
 
-    let workspace_page =
-        client.retrieve_page(&loaded_registry.registry.notion.workspace_page_id)?;
-
-    if workspace_page.in_trash {
-        return Err(format!(
-            "workspace page `{}` is in trash and cannot be used. Restore it in Notion or create a new workspace explicitly.",
-            loaded_registry.registry.notion.workspace_page_id
-        )
-        .into());
+    let workspace = client.retrieve_page(&loaded_registry.registry.notion.workspace_page_id)?;
+    if workspace.in_trash {
+        return Err("registered workspace page is in trash".into());
     }
 
+    let mut changed = false;
+    println!(
+        "Orbexa init\n\nWorkspace:\n  {} {}",
+        loaded_registry.registry.notion.workspace_page_name, workspace.id
+    );
+    println!("\nRoots:");
+    for (key, root_config) in &loaded.config.workspace.roots {
+        if let Some(root) = loaded_registry.registry.notion.roots.get(key) {
+            validate_registered_root(&client, key, root)?;
+            println!(
+                "  {key}: verified {} {}",
+                root.database_name, root.database_id
+            );
+            continue;
+        }
+        if dry_run {
+            println!(
+                "  {key}: would create {} / {}",
+                root_config.database_name, root_config.data_source_name
+            );
+            continue;
+        }
+        let root = create_root(&client, &loaded_registry.registry, root_config)?;
+        println!(
+            "  {key}: created {} {}",
+            root.database_name, root.database_id
+        );
+        upsert_root(&mut loaded_registry.registry, key.clone(), root);
+        changed = true;
+    }
+    if changed {
+        let path = write_registry(&registry_path, &loaded_registry.registry)?;
+        println!("\nUpdated registry:\n  {}", path.display());
+    } else if !dry_run {
+        println!("\nNo changes made.");
+    }
+    Ok(())
+}
+
+fn recreate_root(root_key: &str, dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_orbexa_config(None)?;
+    let root_config = loaded
+        .config
+        .workspace
+        .roots
+        .get(root_key)
+        .ok_or_else(|| format!("unknown configured root `{root_key}`"))?;
+    let registry_path = resolve_registry_path(&loaded.config)?;
+    let mut loaded_registry = load_registry(&registry_path)?
+        .ok_or("workspace registry is missing; run `orbexa init` first")?;
+    let client = client(&loaded)?;
     let lock_path = resolve_lock_path(&loaded_registry.registry.name)?;
     let mut lock = load_lock(&lock_path)?;
 
-    println!("Orbexa recreate database");
-    println!();
-    println!("Registry:");
-    println!("  {}", loaded_registry.path.display());
-    println!("Workspace page:");
-    println!(
-        "  {} {}",
-        loaded_registry.registry.notion.workspace_page_name,
-        loaded_registry.registry.notion.workspace_page_id
-    );
-    println!();
-    println!("Current registered database:");
-    println!(
-        "  {} {}",
-        loaded_registry.registry.notion.database.name, loaded_registry.registry.notion.database.id
-    );
-    println!();
-
-    if dry_run {
-        println!("Would create:");
-        println!("  Database     {}", loaded.config.workspace.database_name);
+    println!("Orbexa recreate root\n\nRoot: {root_key}");
+    if let Some(current) = loaded_registry.registry.notion.roots.get(root_key) {
         println!(
-            "  Data source  {}",
-            loaded.config.workspace.data_sources.documents.name
+            "Current database: {} {}",
+            current.database_name, current.database_id
         );
-        println!();
-        println!("Would update registry:");
-        println!("  {}", loaded_registry.path.display());
-        println!();
-        println!("Would clear stale page locks:");
-        for page in &lock.pages {
-            if page.workspace == loaded_registry.registry.name.to_lowercase()
-                || page.workspace == loaded_registry.registry.name
-            {
-                println!("  {}", page.codexa_id);
-            }
-        }
+    }
+    if dry_run {
+        println!(
+            "Would create: {} / {}",
+            root_config.database_name, root_config.data_source_name
+        );
+        println!(
+            "Would clear {} page lock(s).",
+            lock.pages.iter().filter(|p| p.root == root_key).count()
+        );
         return Ok(());
     }
-
-    let database = client.create_database(
-        &loaded_registry.registry.notion.workspace_page_id,
-        &loaded.config.workspace.database_name,
-        &loaded.config.workspace.data_sources.documents.name,
-    )?;
-
-    let data_source = database
-        .data_source_named(&loaded.config.workspace.data_sources.documents.name)
-        .or_else(|| database.data_sources.first())
-        .ok_or("created database did not return a data source")?;
-
-    let registry = registry_with_database(
-        loaded_registry.registry.clone(),
-        database.id.clone(),
-        data_source.id.clone(),
+    let root = create_root(&client, &loaded_registry.registry, root_config)?;
+    upsert_root(
+        &mut loaded_registry.registry,
+        root_key.to_string(),
+        root.clone(),
     );
-    let written_registry_path = write_registry(&registry_path, &registry)?;
-
-    let before = lock.pages.len();
-    lock.pages.retain(|page| {
-        page.workspace != loaded_registry.registry.name.to_lowercase()
-            && page.workspace != loaded_registry.registry.name
-    });
-    let cleared = before - lock.pages.len();
-    let written_lock_path = write_lock(&lock_path, &lock)?;
-
-    println!("Created:");
-    println!(
-        "  Database {} {}",
-        loaded.config.workspace.database_name, database.id
-    );
-    println!("  Data source {} {}", data_source.name, data_source.id);
-    if let Some(url) = &database.url {
-        println!("  URL {url}");
-    }
-    println!();
-    println!("Updated registry:");
-    println!("  {}", written_registry_path.display());
-    println!();
-    println!("Cleared stale page locks:");
-    println!("  {cleared}");
-    println!("Wrote lock:");
-    println!("  {}", written_lock_path.display());
-
+    let cleared = clear_root(&mut lock, root_key);
+    write_registry(&registry_path, &loaded_registry.registry)?;
+    write_lock(&lock_path, &lock)?;
+    println!("Created: {} {}", root.database_name, root.database_id);
+    println!("Cleared page locks: {cleared}");
     Ok(())
 }
 
 fn apply(input_dir: PathBuf, dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let loaded_config = load_orbexa_config(None)?;
-    let registry_path = resolve_registry_path(&loaded_config.config)?;
+    let loaded = load_orbexa_config(None)?;
+    let registry_path = resolve_registry_path(&loaded.config)?;
     let loaded_registry = load_registry(&registry_path)?
         .ok_or("workspace registry is missing; run `orbexa init` first")?;
-
-    if loaded_registry.registry.notion.database.id.is_empty()
-        || loaded_registry
-            .registry
-            .notion
-            .data_sources
-            .documents
-            .id
-            .is_empty()
-    {
-        return Err(
-            "workspace registry is missing database/data source IDs; run `orbexa init` first"
-                .into(),
-        );
-    }
-
     let manifest = load_manifest(&input_dir)?;
+    let client = client(&loaded)?;
     let lock_path = resolve_lock_path(&loaded_registry.registry.name)?;
     let mut lock = load_lock(&lock_path)?;
 
-    println!("Orbexa apply");
-    println!();
-    println!("Input:");
-    println!("  {}", input_dir.display());
-    println!("Manifest:");
-    println!("  {}", manifest.path.display());
-    println!("Registry:");
-    println!("  {}", loaded_registry.path.display());
-    println!("Lock:");
-    println!("  {}", lock_path.display());
-    println!();
-
-    let token = notion_token()?;
-    let client = NotionClient::new(token, loaded_config.config.notion.api_version.clone());
-
-    let registered_database_id = &loaded_registry.registry.notion.database.id;
-    let registered_data_source_id = &loaded_registry.registry.notion.data_sources.documents.id;
-
-    let database = client.retrieve_database(registered_database_id).map_err(|error| {
-        format!(
-            "registered Notion database `{}` could not be read. It may have been deleted manually. \
-Registry: {}\n\
-Run an explicit repair/recreate command before applying artifacts. Original error: {error}",
-            registered_database_id,
-            loaded_registry.path.display()
-        )
-    })?;
-
-    if database.in_trash {
-        return Err(format!(
-            "registered Notion database `{}` is in trash and cannot be used. \
-Registry: {}\n\
-Run an explicit repair/recreate command before applying artifacts.",
-            registered_database_id,
-            loaded_registry.path.display()
-        )
-        .into());
+    let mut roots = BTreeMap::new();
+    for (key, root) in &loaded_registry.registry.notion.roots {
+        validate_registered_root(&client, key, root)?;
+        roots.insert(key.clone(), root.clone());
     }
 
-    let has_registered_data_source = database
-        .data_sources
-        .iter()
-        .any(|data_source| data_source.id == *registered_data_source_id);
-
-    if !has_registered_data_source {
-        return Err(format!(
-            "registered Notion data source `{}` was not found in database `{}`. It may have been deleted or replaced manually. \
-Registry: {}\n\
-Run an explicit repair/recreate command before applying artifacts.",
-            registered_data_source_id,
-            registered_database_id,
-            loaded_registry.path.display()
-        )
-        .into());
-    }
-
-    for page_entry in &manifest.manifest.pages {
-        let loaded_page = load_page_artifact(&input_dir, &page_entry.path)?;
-        let artifact = loaded_page.artifact;
-
-        if artifact.target.workspace != loaded_registry.registry.name.to_lowercase()
-            && artifact.target.workspace != loaded_registry.registry.name
-        {
+    let mut artifacts = Vec::new();
+    for entry in &manifest.manifest.pages {
+        let artifact = load_page_artifact(&input_dir, &entry.path)?.artifact;
+        validate_artifact_target(&artifact, &loaded_registry.registry)?;
+        if !roots.contains_key(&artifact.target.root) {
             return Err(format!(
-                "artifact `{}` targets workspace `{}`, but loaded registry is `{}`",
-                artifact.document.id, artifact.target.workspace, loaded_registry.registry.name
+                "artifact `{}` targets uninitialized root `{}`",
+                artifact.document.id, artifact.target.root
             )
             .into());
         }
+        artifacts.push(artifact);
+    }
+    validate_link_targets(&artifacts)?;
 
-        if artifact.target.data_source
-            != loaded_registry.registry.notion.data_sources.documents.kind
-            && artifact.target.data_source != "documents"
+    println!(
+        "Orbexa apply\n\nInput:\n  {}\nManifest:\n  {}",
+        input_dir.display(),
+        manifest.path.display()
+    );
+
+    if dry_run {
+        return apply_dry_run(&client, &artifacts, &roots, &lock);
+    }
+
+    let mut identities = BTreeMap::new();
+
+    // Pass 1: establish every Notion page identity before rendering links.
+    for artifact in &artifacts {
+        let root = &roots[&artifact.target.root];
+        let appearance = &loaded.config.workspace.roots[&artifact.target.root].appearance;
+
+        let (page, identity_changed) = if let Some(existing) =
+            locked_page(&lock, &artifact.document.id).cloned()
         {
-            return Err(format!(
-                "artifact `{}` targets unsupported data source `{}`",
-                artifact.document.id, artifact.target.data_source
-            )
-            .into());
-        }
-
-        if let Some(existing) = locked_page(&lock, &artifact.document.id) {
-            let locked_page = client
-                .retrieve_page(&existing.notion_page_id)
-                .map_err(|error| {
-                    format!(
-                        "locked Notion page `{}` for Codexa document `{}` could not be read. \
-It may have been deleted manually.\n\
-Lock: {}\n\
-Run an explicit repair/recreate command before applying artifacts. Original error: {error}",
-                        existing.notion_page_id,
-                        artifact.document.id,
-                        lock_path.display()
-                    )
-                })?;
-
-            if locked_page.in_trash {
+            if existing.root != artifact.target.root {
                 return Err(format!(
-                    "locked Notion page `{}` for Codexa document `{}` is in trash and cannot be used.\n\
-Lock: {}\n\
-Run an explicit repair/recreate command before applying artifacts.",
-                    existing.notion_page_id,
-                    artifact.document.id,
-                    lock_path.display()
+                    "document `{}` moved from root `{}` to `{}`; explicit move support is not implemented yet",
+                    artifact.document.id, existing.root, artifact.target.root
                 )
                 .into());
             }
+            let page = client.retrieve_page(&existing.notion_page_id)?;
+            if page.in_trash {
+                if loaded.config.sync.on_missing != "recreate" {
+                    return Err(format!(
+                        "locked page `{}` is in trash and sync.on_missing is `{}`",
+                        existing.notion_page_id, loaded.config.sync.on_missing
+                    )
+                    .into());
+                }
+                (
+                    create_placeholder_page(&client, artifact, root, appearance)?,
+                    true,
+                )
+            } else {
+                (page, false)
+            }
+        } else {
+            (
+                create_placeholder_page(&client, artifact, root, appearance)?,
+                true,
+            )
+        };
 
-            println!("Skip:");
+        let page_url = page
+            .url
+            .clone()
+            .ok_or_else(|| format!("Notion page `{}` has no URL", page.id))?;
+        identities.insert(
+            artifact.document.id.clone(),
+            NotionIdentity {
+                page_id: page.id.clone(),
+                page_url: page_url.clone(),
+                title: artifact.document.title.clone(),
+            },
+        );
+
+        if identity_changed {
+            upsert_locked_page(&mut lock, artifact, page.id, Some(page_url), "");
+        }
+    }
+
+    // Pass 2: resolve all logical links and update only changed pages.
+    for artifact in &artifacts {
+        let identity = &identities[&artifact.document.id];
+        let rendered = render_notion_markdown(artifact, &identities)?;
+        let rendered_hash = rendered_content_hash(artifact, &rendered);
+        let existing = locked_page(&lock, &artifact.document.id)
+            .cloned()
+            .ok_or("page identity disappeared during apply")?;
+
+        if existing.source_content_hash == artifact.source.content_hash
+            && existing.rendered_content_hash == rendered_hash
+        {
             println!(
-                "  {} already synced to {}",
-                artifact.document.id, existing.notion_page_id
-            );
-            println!(
-                "  Notion title: {}",
-                locked_page.title().unwrap_or_else(|| "<untitled>".into())
+                "Skip:\n  {} already synced to {}",
+                artifact.document.id, identity.page_id
             );
             continue;
         }
 
-        if dry_run {
-            println!("Would create:");
-            println!("  {} → Notion page", artifact.document.id);
-            println!("  Title: {}", artifact.document.title);
-            println!("  Description: {}", artifact.document.description);
-            println!("  Root: {}", artifact.navigation.root);
-            println!("  Product: {}", artifact.navigation.product);
-            println!("  Kind: {}", artifact.document.kind);
-            println!("  Tags: {}", artifact.document.tags.join(", "));
-            println!("  Status: {}", artifact.document.status);
-            println!("  Visibility: {}", artifact.document.visibility);
-            println!();
-            continue;
-        }
-
-        let page_appearance = loaded_config
-            .config
-            .workspace
-            .data_sources
-            .documents
-            .appearance
-            .as_ref()
-            .unwrap_or(&loaded_config.config.workspace.appearance);
-
-        let page = client.create_document_page(
-            &loaded_registry.registry.notion.data_sources.documents.id,
-            &artifact.document.title,
-            &artifact.document.description,
-            &artifact.navigation.root,
-            &artifact.navigation.product,
-            &artifact.document.kind,
-            &artifact.document.tags,
-            &artifact.document.status,
-            &artifact.document.visibility,
-            &artifact.content.markdown,
-            &page_appearance.icon,
-            &page_appearance.cover,
+        let appearance = &loaded.config.workspace.roots[&artifact.target.root].appearance;
+        client.update_document_page(
+            &identity.page_id,
+            &UpdateDocumentPage {
+                title: &artifact.document.title,
+                description: &artifact.document.description,
+                root: &artifact.navigation.root,
+                product: &artifact.navigation.product,
+                kind: &artifact.document.kind,
+                tags: &artifact.document.tags,
+                status: &artifact.document.status,
+                visibility: &artifact.document.visibility,
+                icon: &appearance.icon,
+                cover: &appearance.cover,
+            },
         )?;
+        client.replace_page_markdown(&identity.page_id, &rendered)?;
 
-        upsert_locked_page(&mut lock, &artifact, page.id.clone(), page.url.clone());
-
-        println!("Created:");
-        println!("  {} {}", artifact.document.id, page.id);
-        if let Some(url) = &page.url {
-            println!("  URL {url}");
-        }
-        println!();
+        upsert_locked_page(
+            &mut lock,
+            artifact,
+            identity.page_id.clone(),
+            Some(identity.page_url.clone()),
+            rendered_hash,
+        );
+        println!("Updated:\n  {} {}", artifact.document.id, identity.page_id);
     }
 
-    if !dry_run {
-        let written_lock_path = write_lock(&lock_path, &lock)?;
-        println!("Wrote:");
-        println!("  {}", written_lock_path.display());
-    }
-
+    write_lock(&lock_path, &lock)?;
     Ok(())
 }
 
-fn init(
-    explicit_config_path: Option<PathBuf>,
-    dry_run: bool,
+fn apply_dry_run(
+    client: &NotionClient,
+    artifacts: &[NotionPageArtifact],
+    roots: &BTreeMap<String, RegistryRoot>,
+    lock: &orbexa::lock::LockFile,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let loaded = load_orbexa_config(explicit_config_path)?;
-    let state_dir = resolve_state_dir()?;
-    let registry_path = resolve_registry_path(&loaded.config)?;
-    let token = notion_token()?;
+    let mut identities = BTreeMap::new();
+    let mut missing = std::collections::BTreeSet::new();
 
-    let client = NotionClient::new(token, loaded.config.notion.api_version.clone());
-
-    if let Some(loaded_registry) = load_registry(&registry_path)? {
-        let workspace_page =
-            client.retrieve_page(&loaded_registry.registry.notion.workspace_page_id)?;
-
-        if !loaded_registry.registry.notion.database.id.is_empty() {
-            println!("Orbexa init");
-            println!();
-            println!("Already initialized:");
-            println!("  Registry: {}", loaded_registry.path.display());
-            println!(
-                "  Workspace page: {}",
-                loaded_registry.registry.notion.workspace_page_name
-            );
-            println!(
-                "  Page ID: {}",
-                loaded_registry.registry.notion.workspace_page_id
-            );
-            println!(
-                "  Notion title: {}",
-                workspace_page
-                    .title()
-                    .unwrap_or_else(|| "<untitled>".into())
-            );
-            println!(
-                "  Database: {} {}",
-                loaded_registry.registry.notion.database.name,
-                loaded_registry.registry.notion.database.id
-            );
-            println!(
-                "  Data source: {} {}",
-                loaded_registry.registry.notion.data_sources.documents.name,
-                loaded_registry.registry.notion.data_sources.documents.id
-            );
-            if let Some(url) = &loaded_registry.registry.notion.workspace_page_url {
-                println!("  URL: {url}");
+    for artifact in artifacts {
+        if let Some(existing) = locked_page(lock, &artifact.document.id) {
+            let page = client.retrieve_page(&existing.notion_page_id)?;
+            if !page.in_trash {
+                if let Some(url) = page.url {
+                    identities.insert(
+                        artifact.document.id.clone(),
+                        NotionIdentity {
+                            page_id: page.id,
+                            page_url: url,
+                            title: artifact.document.title.clone(),
+                        },
+                    );
+                    continue;
+                }
             }
-            println!();
-            println!("No changes made.");
-            return Ok(());
         }
-
-        if dry_run {
-            println!("Orbexa init plan");
-            println!();
-            println!("Already has workspace page:");
-            println!("  Registry: {}", loaded_registry.path.display());
-            println!(
-                "  Workspace page: {} {}",
-                loaded_registry.registry.notion.workspace_page_name,
-                loaded_registry.registry.notion.workspace_page_id
-            );
-            println!();
-            println!("Would create:");
-            println!("  Database     {}", loaded.config.workspace.database_name);
-            println!(
-                "  Data source  {}",
-                loaded.config.workspace.data_sources.documents.name
-            );
-            println!();
-            println!("Would update registry:");
-            println!("  {}", loaded_registry.path.display());
-            return Ok(());
-        }
-
-        let database = client.create_database(
-            &loaded_registry.registry.notion.workspace_page_id,
-            &loaded.config.workspace.database_name,
-            &loaded.config.workspace.data_sources.documents.name,
-        )?;
-
-        let data_source = database
-            .data_source_named(&loaded.config.workspace.data_sources.documents.name)
-            .or_else(|| database.data_sources.first())
-            .ok_or("created database did not return a data source")?;
-
-        let registry = registry_with_database(
-            loaded_registry.registry,
-            database.id.clone(),
-            data_source.id.clone(),
-        );
-        let written_registry_path = write_registry(&registry_path, &registry)?;
-
-        println!("Orbexa init");
-        println!();
-        println!("Created:");
+        missing.insert(artifact.document.id.clone());
+        let root = &roots[&artifact.target.root];
         println!(
-            "  Database {} {}",
-            loaded.config.workspace.database_name, database.id
+            "Would create:\n  {} → {}\n  Root: {}\n  Product: {}",
+            artifact.document.id,
+            root.database_name,
+            artifact.target.root,
+            artifact.navigation.product
         );
-        println!("  Data source {} {}", data_source.name, data_source.id);
-        if let Some(url) = &database.url {
-            println!("  URL {url}");
+    }
+
+    for artifact in artifacts {
+        if missing.contains(&artifact.document.id) {
+            println!(
+                "Would render after identity creation:\n  {}",
+                artifact.document.id
+            );
+            continue;
         }
-        println!();
-        println!("Updated registry:");
-        println!("  {}", written_registry_path.display());
-        return Ok(());
+        if artifact
+            .links
+            .iter()
+            .any(|link| !identities.contains_key(&link.target_id))
+        {
+            println!(
+                "Would refresh links after identity creation:\n  {}",
+                artifact.document.id
+            );
+            continue;
+        }
+
+        let rendered = render_notion_markdown(artifact, &identities)?;
+        let rendered_hash = rendered_content_hash(artifact, &rendered);
+        let existing =
+            locked_page(lock, &artifact.document.id).ok_or("dry-run identity has no lock entry")?;
+        if existing.source_content_hash == artifact.source.content_hash
+            && existing.rendered_content_hash == rendered_hash
+        {
+            println!(
+                "Skip:\n  {} already synced to {}",
+                artifact.document.id, existing.notion_page_id
+            );
+        } else {
+            println!(
+                "Would update:\n  {} {}",
+                artifact.document.id, existing.notion_page_id
+            );
+        }
     }
+    Ok(())
+}
 
-    let parent = client.retrieve_page(&loaded.config.notion.parent_page_id)?;
-    let children = client.retrieve_block_children(&loaded.config.notion.parent_page_id)?;
-    let discovery = build_discovery(&loaded, &parent, &children);
+fn create_placeholder_page(
+    client: &NotionClient,
+    artifact: &NotionPageArtifact,
+    root: &RegistryRoot,
+    appearance: &orbexa::config::WorkspaceAppearance,
+) -> Result<orbexa::notion::Page, Box<dyn std::error::Error>> {
+    let page = client.create_document_page(&CreateDocumentPage {
+        data_source_id: &root.data_source_id,
+        title: &artifact.document.title,
+        description: &artifact.document.description,
+        root: &artifact.navigation.root,
+        product: &artifact.navigation.product,
+        kind: &artifact.document.kind,
+        tags: &artifact.document.tags,
+        status: &artifact.document.status,
+        visibility: &artifact.document.visibility,
+        markdown: "_Orbexa is preparing this page._",
+        icon: &appearance.icon,
+        cover: &appearance.cover,
+    })?;
+    println!("Created identity:\n  {} {}", artifact.document.id, page.id);
+    Ok(page)
+}
 
-    if dry_run {
-        print!(
-            "{}",
-            render_init_plan_with_discovery(
-                &loaded.path,
-                &state_dir,
-                &loaded.config,
-                Some(&discovery),
-            )
-        );
-        println!();
-        println!("Would write registry:");
-        println!("  {}", registry_path.display());
-        return Ok(());
+fn create_root(
+    client: &NotionClient,
+    registry: &WorkspaceRegistry,
+    config: &RootConfig,
+) -> Result<RegistryRoot, Box<dyn std::error::Error>> {
+    let database = client.create_database(
+        &registry.notion.workspace_page_id,
+        &config.database_name,
+        &config.data_source_name,
+    )?;
+    let data_source_id = database
+        .data_source_named(&config.data_source_name)
+        .or_else(|| database.data_sources.first())
+        .ok_or("created database did not return a data source")?
+        .id
+        .clone();
+    Ok(RegistryRoot {
+        database_name: config.database_name.clone(),
+        database_id: database.id,
+        data_source_name: config.data_source_name.clone(),
+        data_source_id,
+    })
+}
+
+fn validate_registered_root(
+    client: &NotionClient,
+    key: &str,
+    root: &RegistryRoot,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let database = client.retrieve_database(&root.database_id)?;
+    if database.in_trash {
+        return Err(format!("registered root `{key}` database `{}` is in trash; run `orbexa init --recreate-root {key}`", root.database_id).into());
     }
-
-    if !discovery.matching_workspace_pages.is_empty() {
+    if !database
+        .data_sources
+        .iter()
+        .any(|source| source.id == root.data_source_id)
+    {
         return Err(format!(
-            "workspace page `{}` already exists under parent page; explicit adoption is not implemented yet",
-            loaded.config.workspace.page_name
+            "registered root `{key}` data source `{}` is missing",
+            root.data_source_id
         )
         .into());
     }
-
-    let workspace_page = client.create_child_page(
-        &loaded.config.notion.parent_page_id,
-        &loaded.config.workspace.page_name,
-        &loaded.config.workspace.appearance.icon,
-        &loaded.config.workspace.appearance.cover,
-    )?;
-
-    let state = State::workspace_page(
-        loaded.config.notion.parent_page_id.clone(),
-        workspace_page.id.clone(),
-        loaded.config.workspace.page_name.clone(),
-        workspace_page.url.clone(),
-    );
-    let state_path = write_state(&state_dir, &state)?;
-
-    let registry = registry_from_workspace_page(
-        &loaded.config,
-        workspace_page.id.clone(),
-        workspace_page.url.clone(),
-    );
-    let written_registry_path = write_registry(&registry_path, &registry)?;
-
-    println!("Orbexa init");
-    println!();
-    println!("Created:");
-    println!(
-        "  Page {} {}",
-        loaded.config.workspace.page_name, workspace_page.id
-    );
-    if let Some(url) = &workspace_page.url {
-        println!("  URL  {url}");
-    }
-    println!();
-    println!("Wrote:");
-    println!("  {}", state_path.display());
-    println!("  {}", written_registry_path.display());
-    println!();
-    println!("Next:");
-    println!("  Run `orbexa init` again to create the database.");
-
     Ok(())
 }
 
-fn build_discovery(loaded: &LoadedConfig, parent: &Page, children: &[Block]) -> BootstrapDiscovery {
-    let mut child_pages = Vec::new();
-    let mut child_databases = Vec::new();
-
-    for child in children {
-        match child.block_type.as_str() {
-            "child_page" => {
-                if let Some(title) = child.title() {
-                    child_pages.push(DiscoveredObject {
-                        id: child.id.clone(),
-                        title: title.into(),
-                    });
-                }
-            }
-            "child_database" => {
-                if let Some(title) = child.title() {
-                    child_databases.push(DiscoveredObject {
-                        id: child.id.clone(),
-                        title: title.into(),
-                    });
-                }
-            }
-            _ => {}
-        }
+fn validate_artifact_target(
+    artifact: &NotionPageArtifact,
+    registry: &WorkspaceRegistry,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !artifact
+        .target
+        .workspace
+        .eq_ignore_ascii_case(&registry.name)
+    {
+        return Err(format!(
+            "artifact `{}` targets workspace `{}` but registry is `{}`",
+            artifact.document.id, artifact.target.workspace, registry.name
+        )
+        .into());
     }
-
-    let matching_workspace_pages = child_pages
-        .iter()
-        .filter(|page| page.title == loaded.config.workspace.page_name)
-        .cloned()
-        .collect();
-
-    BootstrapDiscovery {
-        parent_title: parent.title().unwrap_or_else(|| "<untitled>".into()),
-        matching_workspace_pages,
-        child_pages,
-        child_databases,
+    if artifact.target.root != artifact.navigation.root {
+        return Err(format!(
+            "artifact `{}` target root and navigation root disagree",
+            artifact.document.id
+        )
+        .into());
     }
+    Ok(())
 }
 
-fn load_orbexa_config(
-    explicit_config_path: Option<PathBuf>,
-) -> Result<LoadedConfig, Box<dyn std::error::Error>> {
-    let config_path = resolve_config_path(explicit_config_path)?;
-    let loaded = load_config(&config_path)?;
-    Ok(loaded)
+fn client(loaded: &LoadedConfig) -> Result<NotionClient, Box<dyn std::error::Error>> {
+    Ok(NotionClient::new(
+        notion_token()?,
+        loaded.config.notion.api_version.clone(),
+    ))
 }
-
+fn load_orbexa_config(path: Option<PathBuf>) -> Result<LoadedConfig, Box<dyn std::error::Error>> {
+    Ok(load_config(resolve_config_path(path)?)?)
+}
 fn notion_token() -> Result<String, Box<dyn std::error::Error>> {
     let token = env::var("NOTION_API_KEY")
         .or_else(|_| env::var("NOTION_TOKEN"))
         .map_err(|_| "neither NOTION_API_KEY nor NOTION_TOKEN is set")?;
-
     if token.trim().is_empty() {
         return Err("Notion API token is empty".into());
     }
-
     Ok(token)
 }
-
 fn print_help() {
     println!(
-        "Orbexa {}\n\nApplies Codexa-generated Notion artifacts to managed Notion pages, databases, and data sources.\n\nUSAGE:\n    orbexa check [--config <PATH>]\n    orbexa init [--dry-run] [--config <PATH>]\n    orbexa init --recreate-database [--dry-run]\n    orbexa apply <ARTIFACT_DIR> [--dry-run]\n    orbexa [OPTIONS]\n\nOPTIONS:\n    -h, --help       Print help\n    -V, --version    Print version",
+        "Orbexa {}\n\nUSAGE:\n    orbexa check [--config <PATH>]\n    orbexa init [--dry-run] [--config <PATH>]\n    orbexa init --recreate-root <ROOT> [--dry-run]\n    orbexa apply <ARTIFACT_DIR> [--dry-run]\n",
         orbexa::VERSION
     );
 }
