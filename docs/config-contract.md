@@ -48,7 +48,7 @@ Do not store `NOTION_TOKEN` in the Orbexa config file. Store it in the shell env
 ## Minimal verify config
 
 ```toml
-schema = "orbexa/config@1"
+schema = "orbexa/config@2"
 
 [notion]
 api_version = "2026-03-11"
@@ -79,7 +79,7 @@ on_drift = "warn_and_skip"
 ## Minimal create config
 
 ```toml
-schema = "orbexa/config@1"
+schema = "orbexa/config@2"
 
 [notion]
 api_version = "2026-03-11"

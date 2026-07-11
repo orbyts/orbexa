@@ -118,59 +118,63 @@ impl NotionClient {
     /// Creates a document page under a Notion data source.
     pub fn create_document_page(
         &self,
-        data_source_id: &str,
-        title: &str,
-        description: &str,
-        root: &str,
-        product: &str,
-        kind: &str,
-        tags: &[String],
-        status: &str,
-        visibility: &str,
-        markdown: &str,
-        icon: &WorkspaceIcon,
-        cover: &WorkspaceCover,
+        document: &CreateDocumentPage<'_>,
     ) -> Result<Page, NotionError> {
         let request = CreateDocumentPageRequest {
-            parent: DataSourceParent { data_source_id },
+            parent: DataSourceParent {
+                data_source_id: document.data_source_id,
+            },
             properties: DocumentPageProperties {
                 name: TitlePropertyValue {
                     title: vec![RichText {
-                        text: TextContent { content: title },
+                        text: TextContent {
+                            content: document.title,
+                        },
                     }],
                 },
                 description: RichTextPropertyValue {
                     rich_text: vec![RichText {
                         text: TextContent {
-                            content: description,
+                            content: document.description,
                         },
                     }],
                 },
                 root: SelectPropertyValue {
-                    select: SelectOption { name: root },
+                    select: SelectOption {
+                        name: document.root,
+                    },
                 },
                 product: SelectPropertyValue {
-                    select: SelectOption { name: product },
+                    select: SelectOption {
+                        name: document.product,
+                    },
                 },
                 kind: SelectPropertyValue {
-                    select: SelectOption { name: kind },
+                    select: SelectOption {
+                        name: document.kind,
+                    },
                 },
                 tags: MultiSelectPropertyValue {
-                    multi_select: tags
+                    multi_select: document
+                        .tags
                         .iter()
                         .map(|tag| SelectOption { name: tag.as_str() })
                         .collect(),
                 },
                 status: SelectPropertyValue {
-                    select: SelectOption { name: status },
+                    select: SelectOption {
+                        name: document.status,
+                    },
                 },
                 visibility: SelectPropertyValue {
-                    select: SelectOption { name: visibility },
+                    select: SelectOption {
+                        name: document.visibility,
+                    },
                 },
             },
-            markdown,
-            icon: PageIcon::from(icon),
-            cover: PageCover::from(cover),
+            markdown: document.markdown,
+            icon: PageIcon::from(document.icon),
+            cover: PageCover::from(document.cover),
         };
 
         let response = self
@@ -295,6 +299,22 @@ impl NotionClient {
     }
 }
 
+/// Parameters for creating a managed Notion document page.
+pub struct CreateDocumentPage<'a> {
+    pub data_source_id: &'a str,
+    pub title: &'a str,
+    pub description: &'a str,
+    pub root: &'a str,
+    pub product: &'a str,
+    pub kind: &'a str,
+    pub tags: &'a [String],
+    pub status: &'a str,
+    pub visibility: &'a str,
+    pub markdown: &'a str,
+    pub icon: &'a WorkspaceIcon,
+    pub cover: &'a WorkspaceCover,
+}
+
 #[derive(Debug, Serialize)]
 struct CreateDocumentPageRequest<'a> {
     parent: DataSourceParent<'a>,
@@ -369,7 +389,7 @@ struct InitialDataSource<'a> {
     properties: DocumentProperties,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 struct DocumentProperties {
     #[serde(rename = "Name")]
     name: TitlePropertySchema,
@@ -387,21 +407,6 @@ struct DocumentProperties {
     status: SelectPropertySchema,
     #[serde(rename = "Visibility")]
     visibility: SelectPropertySchema,
-}
-
-impl Default for DocumentProperties {
-    fn default() -> Self {
-        Self {
-            name: TitlePropertySchema::default(),
-            description: RichTextPropertySchema::default(),
-            root: SelectPropertySchema::default(),
-            product: SelectPropertySchema::default(),
-            kind: SelectPropertySchema::default(),
-            tags: MultiSelectPropertySchema::default(),
-            status: SelectPropertySchema::default(),
-            visibility: SelectPropertySchema::default(),
-        }
-    }
 }
 
 #[derive(Debug, Default, Serialize)]
